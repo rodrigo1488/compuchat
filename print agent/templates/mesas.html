@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+{% block title %}Mesas — Print Agent{% endblock %}
+{% block extra_css %}
+<style>
+    .shell { width: 90%; max-width: 90%; }
+    .mesas-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-end;
+        margin-bottom: 1rem;
+    }
+    .mesas-top h2 { margin: 0 0 0.2rem; }
+    .mesas-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .layout { display: block; }
+    .mesa-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+        align-items: flex-start;
+        margin-bottom: 1rem;
+    }
+    .mesa-card {
+        width: 112px;
+        min-height: 128px;
+        padding: 0.55rem 0.4rem 0.45rem;
+        background: #fff;
+        color: #1e293b;
+        border: 1px solid #c5ced6;
+        border-radius: 6px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0.12rem;
+        text-align: center;
+    }
+    .mesa-card:hover {
+        background: #fff;
+        color: #1e293b;
+        border-color: #64748b;
+    }
+    .mesa-card.active {
+        background: #fff;
+        color: #1e293b;
+        border: 2px solid #0f172a;
+        padding: calc(0.55rem - 1px) calc(0.4rem - 1px) calc(0.45rem - 1px);
+    }
+    .mesa-clock {
+        width: 36px;
+        height: 36px;
+        border: 2px solid #334155;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        margin-bottom: 0.2rem;
+        color: #334155;
+    }
+    .mesa-num {
+        font-size: 0.95rem;
+        font-weight: 700;
+        line-height: 1.1;
+        color: #1e293b;
+    }
+    .mesa-nome, .mesa-total {
+        display: block;
+        max-width: 100%;
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #64748b;
+        line-height: 1.15;
+    }
+    .mesa-nome {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        white-space: normal;
+    }
+    .muted { color: var(--muted); font-size: 0.84rem; }
+    .conta-box {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 0.9rem;
+        background: #f8fbfb;
+        min-height: 280px;
+    }
+    .item-line {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 0.45rem;
+        padding: 0.45rem 0;
+        border-bottom: 1px solid var(--line);
+    }
+    .totais { margin-top: 0.8rem; }
+    .totais div {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.2rem 0;
+    }
+    .totais .grand { font-size: 1.15rem; font-weight: 800; margin-top: 0.35rem; }
+    .desconto-row {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        margin-top: 0.85rem;
+        flex-wrap: wrap;
+    }
+    .desconto-row input, .desconto-row select {
+        width: auto;
+        background: #fff;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.4rem 0.55rem;
+    }
+    .desconto-row input { width: 7rem; }
+    .status-line { min-height: 1.2rem; margin: 0.4rem 0 0; }
+    .status-line.err { color: var(--danger); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="mesas-top">
+    <div>
+        <h2>Mesas abertas</h2>
+        <p class="hint" style="margin: 0;">A taxa de serviço fica em Configuração, aba POS local. O desconto é desta mesa, na conta aberta.</p>
+    </div>
+    <div class="mesas-actions">
+        <label for="printer" class="hint" style="margin: 0;">Impressora</label>
+        <select id="printer" {% if not boot.printers %}disabled{% endif %}>
+            {% for printer in boot.printers %}
+            <option value="{{ printer.index }}">{{ printer.label }}</option>
+            {% endfor %}
+        </select>
+        <button type="button" id="refresh" class="btn-secondary">Atualizar</button>
+    </div>
+</div>
+<p id="status" class="status-line hint"></p>
+<div class="layout">
+    <div>
+        <div id="mesa-list" class="mesa-list"></div>
+    </div>
+    <div class="conta-box" id="conta">
+        <p class="muted">Escolha uma mesa para ver os itens, o total e imprimir a conferência.</p>
+    </div>
+</div>
+<script id="mesas-boot" type="application/json">{{ boot|tojson }}</script>
+<script>
+(function () {
+    const boot = JSON.parse(document.getElementById("mesas-boot").textContent);
+    const listEl = document.getElementById("mesa-list");
+    const contaEl = document.getElementById("conta");
+    const statusEl = document.getElementById("status");
+    let tipopedido = "";
+    let taxa = 0;
+    let aberta = null;
+    let contaAtual = null;
+    const descontos = {};
+
+    function money(value) {
+        return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    }
+
+    function setStatus(text, isError) {
+        statusEl.textContent = text || "";
+        statusEl.className = "status-line " + (isError ? "err" : "hint");
+    }
+
+    async function api(path, options) {
+        const headers = { "Accept": "application/json" };
+        if (boot.token) headers["X-Pos-Token"] = boot.token;
+        const init = Object.assign({ headers: headers }, options || {});
+        if (init.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+        const response = await fetch(path, init);
+        const data = await response.json().catch(function () { return {}; });
+        if (!response.ok) {
+            const error = new Error(data.error || ("HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        return data;
+    }
+
+    function numeroMesa(mesa) {
+        const raw = String(mesa.number || mesa.name || "").replace(/\D/g, "");
+        return raw ? parseInt(raw, 10) : null;
+    }
+
+    function cents(value) {
+        return Math.round(Number(value || 0) * 100);
+    }
+
+    function soma(base) {
+        const subtotal = cents(base);
+        const valorTaxa = Math.round(subtotal * taxa / 100);
+        return {
+            subtotal: subtotal / 100,
+            taxa: valorTaxa / 100,
+            total: (subtotal + valorTaxa) / 100
+        };
+    }
+
+    function renderList(mesas) {
+        listEl.innerHTML = "";
+        if (!mesas.length) {
+            listEl.innerHTML = "<p class='muted'>Nenhuma mesa aberta.</p>";
+            return;
+        }
+        mesas.forEach(function (mesa) {
+            const numero = numeroMesa(mesa);
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "mesa-card" + (aberta === numero ? " active" : "");
+            button.dataset.numero = String(numero);
+            const cliente = mesa.contactName ? String(mesa.contactName) : "";
+            const totais = soma(mesa.valortotal);
+            const nome = cliente ? "<span class='mesa-nome'>" + escapeHtml(cliente) + "</span>" : "";
+            button.innerHTML =
+                "<span class='mesa-clock' aria-hidden='true'><svg viewBox='0 0 24 24' width='16' height='16' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'><path d='M12 7v6l3.2 2'/></svg></span>" +
+                "<strong class='mesa-num'>" + numero + "</strong>" +
+                nome +
+                "<span class='mesa-total'>" + money(totais.total) + "</span>";
+            button.addEventListener("click", function () { abrir(numero); });
+            listEl.appendChild(button);
+        });
+    }
+
+    function subtotalConta(conta) {
+        const itens = conta.itens || [];
+        return itens.reduce(function (acc, item) {
+            return acc + Number(item.valortotal || 0);
+        }, itens.length ? 0 : Number(conta.valortotal || 0));
+    }
+
+    function descontoPedido() {
+        const salvo = descontos[aberta] || { tipo: "percent", valor: 0 };
+        const tipoEl = document.getElementById("desconto-tipo");
+        const valorEl = document.getElementById("desconto-valor");
+        if (!tipoEl || !valorEl) return salvo;
+        const valor = Number(String(valorEl.value || "0").replace(",", "."));
+        return { tipo: tipoEl.value, valor: isNaN(valor) ? 0 : valor };
+    }
+
+    function totaisConta(conta) {
+        const base = soma(subtotalConta(conta));
+        const pedido = descontoPedido();
+        let desconto = 0;
+        let descontoPercent = 0;
+        if (pedido.tipo === "valor") {
+            desconto = Math.min(Math.max(pedido.valor, 0), base.total);
+        } else {
+            descontoPercent = Math.min(Math.max(pedido.valor, 0), 100);
+            desconto = Math.round(cents(base.subtotal) * descontoPercent / 100) / 100;
+            if (desconto > base.total) desconto = base.total;
+        }
+        const total = Math.max(0, (cents(base.total) - cents(desconto)) / 100);
+        return {
+            subtotal: base.subtotal,
+            taxa: base.taxa,
+            desconto: desconto,
+            descontoPercent: descontoPercent,
+            total: total
+        };
+    }
+
+    function htmlTotais(totais) {
+        const taxaLinha = taxa > 0
+            ? "<div><span>Taxa de serviço " + String(taxa).replace(".", ",") + "%</span><strong>" + money(totais.taxa) + "</strong></div>"
+            : "";
+        const descontoLinha = totais.desconto > 0
+            ? "<div><span>Desconto" + (totais.descontoPercent > 0 ? " " + String(totais.descontoPercent).replace(".", ",") + "%" : "") + "</span><strong>- " + money(totais.desconto) + "</strong></div>"
+            : "";
+        return "<div><span>Subtotal</span><strong>" + money(totais.subtotal) + "</strong></div>" + taxaLinha + descontoLinha + "<div class='grand'><span>Total</span><span>" + money(totais.total) + "</span></div>";
+    }
+
+    function atualizarTotais() {
+        if (!contaAtual) return;
+        descontos[aberta] = descontoPedido();
+        const box = document.getElementById("totais");
+        if (box) box.innerHTML = htmlTotais(totaisConta(contaAtual));
+    }
+
+    function renderConta(conta) {
+        contaAtual = conta;
+        const salvo = descontos[conta.numeromesa] || { tipo: "percent", valor: 0 };
+        const itens = conta.itens || [];
+        const linhas = itens.map(function (item) {
+            const obs = item.observacao ? "<div class='muted'>" + escapeHtml(item.observacao) + "</div>" : "";
+            return "<div class='item-line'><strong>" + formatQty(item.quantidade) + "</strong><div>" + escapeHtml(item.nomeproduto || "Item") + obs + "</div><span>" + money(item.valortotal) + "</span></div>";
+        }).join("");
+        contaEl.innerHTML =
+            "<div class='mesas-top'><div><h2 style='margin:0'>Mesa " + conta.numeromesa + "</h2><p class='muted' style='margin:0.2rem 0 0'>" + escapeHtml(conta.cliente || "Sem cliente") + "</p></div><button type='button' id='print' class='btn'>Imprimir conferência</button></div>" +
+            (linhas || "<p class='muted'>Conta sem itens.</p>") +
+            "<div class='desconto-row'><label for='desconto-valor'>Desconto</label><input id='desconto-valor' type='number' min='0' step='0.01' value='" + salvo.valor + "'><select id='desconto-tipo'><option value='percent'" + (salvo.tipo === "percent" ? " selected" : "") + ">%</option><option value='valor'" + (salvo.tipo === "valor" ? " selected" : "") + ">R$</option></select></div>" +
+            "<div class='totais' id='totais'></div>";
+        document.getElementById("desconto-valor").addEventListener("input", atualizarTotais);
+        document.getElementById("desconto-tipo").addEventListener("change", atualizarTotais);
+        document.getElementById("print").addEventListener("click", function () { imprimir(conta.numeromesa); });
+        atualizarTotais();
+    }
+
+    function formatQty(value) {
+        const number = Number(value || 0);
+        if (Number.isInteger(number)) return String(number);
+        return String(number).replace(".", ",");
+    }
+
+    function escapeHtml(value) {
+        return String(value || "").replace(/[&<>"']/g, function (char) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char];
+        });
+    }
+
+    async function carregar() {
+        setStatus("Buscando mesas…");
+        const settings = await api("/pos/order-settings");
+        tipopedido = settings.tipopedido;
+        taxa = Number(settings.taxaServico || 0);
+        const data = await api("/pos/mesas?tipopedido=" + encodeURIComponent(tipopedido));
+        const mesas = (data.mesas || []).filter(function (mesa) {
+            return mesa.status === "ocupada" && mesa.type !== "balcao" && numeroMesa(mesa);
+        }).sort(function (a, b) { return numeroMesa(a) - numeroMesa(b); });
+        renderList(mesas);
+        setStatus(mesas.length + " mesa(s) aberta(s)" + (taxa > 0 ? " · taxa " + String(taxa).replace(".", ",") + "%" : ""));
+    }
+
+    async function abrir(numero) {
+        aberta = numero;
+        document.querySelectorAll(".mesa-card").forEach(function (card) {
+            card.classList.toggle("active", card.dataset.numero === String(numero));
+        });
+        setStatus("Abrindo mesa " + numero + "…");
+        const conta = await api("/pos/conta?numeromesa=" + encodeURIComponent(numero) + "&tipopedido=" + encodeURIComponent(tipopedido));
+        if (!conta.open) {
+            contaEl.innerHTML = "<p class='muted'>A mesa " + numero + " não tem conta aberta.</p>";
+            setStatus("Mesa " + numero + " sem conta aberta", true);
+            return;
+        }
+        renderConta(conta);
+        setStatus("");
+    }
+
+    async function imprimir(numero) {
+        const printer = document.getElementById("printer");
+        if (!printer || printer.disabled) {
+            setStatus("Cadastre uma impressora em Configuração.", true);
+            return;
+        }
+        setStatus("Imprimindo conferência da mesa " + numero + "…");
+        const pedido = descontoPedido();
+        const data = await api(
+            "/pos/conta/conferencia?numeromesa=" + encodeURIComponent(numero) + "&tipopedido=" + encodeURIComponent(tipopedido),
+            {
+                method: "POST",
+                body: JSON.stringify({
+                    printerIndex: Number(printer.value),
+                    desconto: pedido.valor,
+                    descontoTipo: pedido.tipo
+                })
+            }
+        );
+        setStatus("Conferência da mesa " + numero + " enviada. Total " + money(data.total));
+    }
+
+    document.getElementById("refresh").addEventListener("click", function () {
+        carregar().catch(function (error) { setStatus(error.message, true); });
+    });
+
+    carregar().catch(function (error) { setStatus(error.message, true); });
+})();
+</script>
+{% endblock %}

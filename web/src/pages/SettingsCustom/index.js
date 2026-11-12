@@ -1,0 +1,302 @@
+import React, { useState, useEffect } from "react";
+import MainContainer from "../../components/MainContainer";
+import MainHeader from "../../components/MainHeader";
+import Title from "../../components/Title";
+import { makeStyles, Paper, Tabs, Tab } from "@material-ui/core";
+
+import TabPanel from "../../components/TabPanel";
+
+import SchedulesForm from "../../components/SchedulesForm";
+import CompaniesManager from "../../components/CompaniesManager";
+import PlansManager from "../../components/PlansManager";
+import HelpsManager from "../../components/HelpsManager";
+import ModulesManager from "../../components/ModulesManager";
+import Options from "../../components/Settings/Options";
+import OptionsAPI from "../../components/Settings/OptionsAPI";
+import OptionsPix from "../../components/Settings/OptionsPix";
+import OptionsAI from "../../components/Settings/OptionsAI";
+
+import { i18n } from "../../translate/i18n.js";
+import { toast } from "react-toastify";
+
+import useCompanies from "../../hooks/useCompanies";
+import useAuth from "../../hooks/useAuth.js";
+import useSettings from "../../hooks/useSettings";
+import useCompanyModules from "../../hooks/useCompanyModules";
+
+import OnlyForSuperUser from "../../components/OnlyForSuperUser";
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    flex: 1,
+    backgroundColor: theme.palette.background.paper,
+  },
+  mainPaper: {
+    ...theme.scrollbarStyles,
+    overflowY: "scroll",
+    flex: 1,
+  },
+  tab: {
+    backgroundColor: theme.palette.options,
+    borderRadius: 4,
+  },
+  paper: {
+    ...theme.scrollbarStyles,
+    overflowY: "scroll",
+    padding: theme.spacing(2),
+    display: "flex",
+    alignItems: "center",
+    width: "100%",
+  },
+  container: {
+    width: "100%",
+    maxHeight: "100%",
+  },
+  control: {
+    padding: theme.spacing(1),
+  },
+  textfield: {
+    width: "100%",
+  },
+}));
+
+const SettingsCustom = () => {
+  const classes = useStyles();
+  const [tab, setTab] = useState("options");
+  const [schedules, setSchedules] = useState([]);
+  const [company, setCompany] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState({});
+  const [settings, setSettings] = useState({});
+  const [schedulesEnabled, setSchedulesEnabled] = useState(false);
+
+  const { getCurrentUserInfo } = useAuth();
+  const { find, updateSchedules } = useCompanies();
+  const { getAll: getAllSettings } = useSettings();
+  const { hasLanchonetes } = useCompanyModules();
+
+  useEffect(() => {
+    async function findData() {
+      setLoading(true);
+      try {
+        const companyId = localStorage.getItem("companyId");
+        const company = await find(companyId);
+        const settingList = await getAllSettings();
+        setCompany(company);
+        setSchedules(company.schedules);
+        setSettings(settingList);
+
+        if (Array.isArray(settingList)) {
+          const scheduleType = settingList.find(
+            (d) => d.key === "scheduleType"
+          );
+          if (scheduleType) {
+            setSchedulesEnabled(scheduleType.value === "company");
+          }
+        }
+
+        const user = await getCurrentUserInfo();
+        setCurrentUser(user);
+      } catch (e) {
+        toast.error(e);
+      }
+      setLoading(false);
+    }
+    findData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Verificar se o usuário está tentando acessar a aba API sem permissão
+  useEffect(() => {
+    if (tab === "api" && currentUser.profile && !canAccessAPI()) {
+      toast.error("Você não tem permissão para acessar esta página.");
+      setTab("options");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, currentUser.profile, hasLanchonetes]);
+
+  const handleTabChange = (event, newValue) => {
+    if (newValue === "ai" && !isAdmin()) {
+      toast.error("Você não tem permissão para acessar esta página.");
+      return;
+    }
+    // Verificar se o usuário está tentando acessar a aba API sem permissão
+    if (newValue === "api") {
+      const userIsAdmin = currentUser.profile === "admin";
+      if (!userIsAdmin || !hasLanchonetes) {
+        toast.error("Você não tem permissão para acessar esta página. Apenas administradores com módulo lanchonete podem acessar.");
+        return;
+      }
+    }
+
+    async function findData() {
+      setLoading(true);
+      try {
+        const companyId = localStorage.getItem("companyId");
+        const company = await find(companyId);
+        const settingList = await getAllSettings();
+        setCompany(company);
+        setSchedules(company.schedules);
+        setSettings(settingList);
+
+        if (Array.isArray(settingList)) {
+          const scheduleType = settingList.find(
+            (d) => d.key === "scheduleType"
+          );
+          if (scheduleType) {
+            setSchedulesEnabled(scheduleType.value === "company");
+          }
+        }
+
+        const user = await getCurrentUserInfo();
+        setCurrentUser(user);
+      } catch (e) {
+        toast.error(e);
+      }
+      setLoading(false);
+    }
+    findData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    setTab(newValue);
+  };
+
+  const handleSubmitSchedules = async (data) => {
+    setLoading(true);
+    try {
+      setSchedules(data);
+      await updateSchedules({ id: company.id, schedules: data });
+      toast.success(i18n.t("settings.schedulesUpdated"));
+    } catch (e) {
+      toast.error(e);
+    }
+    setLoading(false);
+  };
+
+  const isSuper = () => {
+    return currentUser.super;
+  };
+
+  const isAdmin = () => {
+    return currentUser.profile === "admin";
+  };
+
+  const canAccessAPI = () => {
+    return isAdmin() && hasLanchonetes;
+  };
+
+  return (
+    <MainContainer className={classes.root}>
+      <MainHeader>
+        <Title>{i18n.t("settings.title")}</Title>
+      </MainHeader>
+      <Paper className={classes.mainPaper} elevation={1}>
+        <Tabs
+          value={tab}
+          indicatorColor="primary"
+          textColor="primary"
+          scrollButtons="on"
+          variant="scrollable"
+          onChange={handleTabChange}
+          className={classes.tab}
+        >
+          <Tab label={i18n.t("settings.tabs.options")} value={"options"} />
+          {isAdmin() && (
+            <Tab label={i18n.t("settings.tabs.ai")} value={"ai"} />
+          )}
+          {canAccessAPI() && <Tab label={i18n.t("settings.tabs.api")} value={"api"} />}
+          {hasLanchonetes && <Tab label={i18n.t("settings.tabs.billing")} value={"billing"} />}
+          {schedulesEnabled && <Tab label={i18n.t("settings.tabs.schedules")} value={"schedules"} />}
+          {isSuper() ? <Tab label={i18n.t("settings.tabs.companies")} value={"companies"} /> : null}
+          {isSuper() ? <Tab label={i18n.t("settings.tabs.modules")} value={"modules"} /> : null}
+          {isSuper() ? <Tab label={i18n.t("settings.tabs.plans")} value={"plans"} /> : null}
+          {isSuper() ? <Tab label={i18n.t("settings.tabs.helps")} value={"helps"} /> : null}
+        </Tabs>
+        <Paper className={classes.paper} elevation={0}>
+          <TabPanel
+            className={classes.container}
+            value={tab}
+            name={"schedules"}
+          >
+            <SchedulesForm
+              loading={loading}
+              onSubmit={handleSubmitSchedules}
+              initialValues={schedules}
+            />
+          </TabPanel>
+          <OnlyForSuperUser
+            user={currentUser}
+            yes={() => (
+              <TabPanel
+                className={classes.container}
+                value={tab}
+                name={"companies"}
+              >
+                <CompaniesManager />
+              </TabPanel>
+            )}
+          />
+          <OnlyForSuperUser
+            user={currentUser}
+            yes={() => (
+              <TabPanel
+                className={classes.container}
+                value={tab}
+                name={"modules"}
+              >
+                <ModulesManager />
+              </TabPanel>
+            )}
+          />
+          <OnlyForSuperUser
+            user={currentUser}
+            yes={() => (
+              <TabPanel
+                className={classes.container}
+                value={tab}
+                name={"plans"}
+              >
+                <PlansManager />
+              </TabPanel>
+            )}
+          />
+          <OnlyForSuperUser
+            user={currentUser}
+            yes={() => (
+              <TabPanel
+                className={classes.container}
+                value={tab}
+                name={"helps"}
+              >
+                <HelpsManager />
+              </TabPanel>
+            )}
+          />
+          <TabPanel className={classes.container} value={tab} name={"billing"}>
+            <OptionsPix settings={settings} />
+          </TabPanel>
+          <TabPanel className={classes.container} value={tab} name={"options"}>
+            <Options
+              settings={settings}
+              scheduleTypeChanged={(value) =>
+                setSchedulesEnabled(value === "company")
+              }
+            />
+          </TabPanel>
+          {isAdmin() && (
+            <TabPanel className={classes.container} value={tab} name={"ai"}>
+              <OptionsAI settings={settings} />
+            </TabPanel>
+          )}
+          {canAccessAPI() && (
+            <TabPanel className={classes.container} value={tab} name={"api"}>
+              <OptionsAPI />
+            </TabPanel>
+          )}
+        </Paper>
+      </Paper>
+    </MainContainer>
+  );
+};
+
+export default SettingsCustom;

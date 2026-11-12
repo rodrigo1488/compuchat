@@ -1,0 +1,865 @@
+import React, { useContext, useEffect, useRef, useState } from "react";
+import { useHistory, useLocation, useParams } from "react-router-dom";
+
+import { makeStyles } from "@material-ui/core/styles";
+import Paper from "@material-ui/core/Paper";
+import Grid from "@material-ui/core/Grid";
+import SearchIcon from "@material-ui/icons/Search";
+import InputBase from "@material-ui/core/InputBase";
+import Badge from "@material-ui/core/Badge";
+import MoveToInboxIcon from "@material-ui/icons/MoveToInbox";
+import CheckBoxIcon from "@material-ui/icons/CheckBox";
+import HistoryIcon from "@material-ui/icons/History";
+import HourglassEmptyIcon from "@material-ui/icons/HourglassEmpty";
+import FilterListIcon from "@material-ui/icons/FilterList";
+import AddIcon from "@material-ui/icons/Add";
+import DashboardIcon from "@material-ui/icons/Dashboard";
+
+import FormControlLabel from "@material-ui/core/FormControlLabel";
+import Switch from "@material-ui/core/Switch";
+import Tabs from "@material-ui/core/Tabs";
+import Tab from "@material-ui/core/Tab";
+import MenuItem from "@material-ui/core/MenuItem";
+import IconButton from "@material-ui/core/IconButton";
+import Menu from "@material-ui/core/Menu";
+import Box from "@material-ui/core/Box";
+import Typography from "@material-ui/core/Typography";
+import Divider from "@material-ui/core/Divider";
+
+import NewTicketModal from "../NewTicketModal";
+import TicketsList from "../TicketsListCustom";
+import TabPanel from "../TabPanel";
+
+import { i18n } from "../../translate/i18n";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { Can } from "../Can";
+import rules from "../../rules";
+import TicketsQueueSelect from "../TicketsQueueSelect";
+import { Button, Tooltip } from "@material-ui/core";
+import { TagsFilter } from "../TagsFilter";
+import { UsersFilter } from "../UsersFilter";
+import usePendingTicketNotification from "../../hooks/usePendingTicketNotification";
+import useSettings from "../../hooks/useSettings";
+import TicketsOverview from "../TicketsOverview";
+import Ticket from "../Ticket";
+
+const check = (role, action, data) => {
+	const permissions = rules[role];
+	if (!permissions) {
+		return false;
+	}
+
+	const staticPermissions = permissions.static;
+
+	if (staticPermissions && staticPermissions.includes(action)) {
+		return true;
+	}
+
+	const dynamicPermissions = permissions.dynamic;
+
+	if (dynamicPermissions) {
+		const permissionCondition = dynamicPermissions[action];
+		if (!permissionCondition) {
+			return false;
+		}
+
+		return permissionCondition(data);
+	}
+	return false;
+};
+
+const useStyles = makeStyles(theme => ({
+	ticketsWrapper: {
+		position: "relative",
+		display: "flex",
+		flex: 1,
+		minHeight: 0,
+		height: "100%",
+		maxHeight: "100%",
+		flexDirection: "column",
+		overflow: "hidden",
+		borderRadius: theme.spacing(2),
+		width: "100%",
+		maxWidth: "100%",
+		backgroundColor: theme.palette.background.paper,
+		[theme.breakpoints.down('sm')]: {
+			flex: 1,
+			minHeight: 0,
+			height: "100%",
+			maxHeight: "100%",
+			overflow: "hidden",
+			position: "relative",
+			zIndex: 0,
+		},
+	},
+
+	tabsHeader: {
+		flex: "none",
+		backgroundColor: theme.palette.tabHeaderBackground,
+		padding: theme.spacing(1, 2),
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "space-between",
+	},
+
+	tabSelect: {
+		minWidth: 180,
+		"& .MuiSelect-select": {
+			padding: theme.spacing(1, 2),
+			display: "flex",
+			alignItems: "center",
+			gap: theme.spacing(1),
+		},
+	},
+	tabsContainer: {
+		flex: 1,
+		borderBottom: `1px solid ${theme.palette.divider}`,
+	},
+	tab: {
+		minWidth: 120,
+		textTransform: "none",
+		fontWeight: 500,
+	},
+	badge: {
+		"& .MuiBadge-badge": {
+			right: -6,
+			top: 4,
+			fontSize: "0.75rem",
+			minWidth: "18px",
+			height: "18px",
+			padding: "0 4px",
+		},
+	},
+
+	tabsInternal: {
+		flex: "none",
+		backgroundColor: theme.palette.tabHeaderBackground
+	},
+
+	settingsIcon: {
+		alignSelf: "center",
+		marginLeft: "auto",
+		padding: 8,
+	},
+
+	tab: {
+		minWidth: 120,
+		width: 120,
+	},
+
+	internalTab: {
+		minWidth: 120,
+		width: 120,
+		padding: 5
+	},
+
+	ticketOptionsBox: {
+		display: "flex",
+		justifyContent: "space-between",
+		alignItems: "center",
+		background: theme.palette.optionsBackground,
+		padding: theme.spacing(1),
+		gap: theme.spacing(1),
+		minHeight: 56,
+	},
+
+	subTabsContainer: {
+		flex: 1,
+		maxWidth: "50%",
+	},
+
+	actionButtonsContainer: {
+		display: "flex",
+		alignItems: "center",
+		gap: theme.spacing(1),
+		marginLeft: "auto",
+		flexShrink: 0,
+	},
+
+	filterMenu: {
+		"& .MuiPaper-root": {
+			minWidth: 250,
+		},
+	},
+
+	filterMenuItem: {
+		padding: theme.spacing(1.5, 2),
+	},
+
+	filterMenuSection: {
+		padding: theme.spacing(1, 2),
+		borderBottom: `1px solid ${theme.palette.divider}`,
+		"&:last-child": {
+			borderBottom: "none",
+		},
+	},
+
+	ticketSearchLine: {
+		padding: theme.spacing(1),
+	},
+
+	serachInputWrapper: {
+		flex: 1,
+		background: theme.palette.total,
+		display: "flex",
+		borderRadius: 40,
+		padding: 4,
+		marginRight: theme.spacing(1),
+	},
+
+	searchIcon: {
+		color: "grey",
+		marginLeft: 6,
+		marginRight: 6,
+		alignSelf: "center",
+	},
+
+	searchInput: {
+		flex: 1,
+		border: "none",
+		borderRadius: 30,
+	},
+
+	insiderTabPanel: {
+		height: '100%',
+		marginTop: "-72px",
+		paddingTop: "72px"
+	},
+
+	insiderDoubleTabPanel: {
+		display:"flex",
+		flexDirection: "column",
+		marginTop: "-72px",
+		paddingTop: "72px",
+		height: "100%"
+	},
+
+	labelContainer: {
+		width: "auto",
+		padding: 0
+	},
+	iconLabelWrapper: {
+		flexDirection: "row",
+		'& > *:first-child': {
+			marginBottom: '3px !important',
+			marginRight: 16
+		}
+	},
+	insiderTabLabel: {
+		[theme.breakpoints.down(1600)]: {
+			display:'none'
+		}
+	},
+	smallFormControl: {
+		'& .MuiOutlinedInput-input': {
+			padding: "12px 10px",
+		},
+		'& .MuiInputLabel-outlined': {
+			marginTop: "-6px"
+		}
+	},
+
+	splitLayout: {
+		display: "flex",
+		height: "100%",
+		width: "100%",
+		minHeight: 0,
+		overflow: "hidden",
+	},
+
+	sidebarColumn: {
+		display: "flex",
+		height: "100%",
+		flexDirection: "column",
+		overflow: "hidden",
+		borderRight: `1px solid ${theme.palette.divider}`,
+	},
+
+	mainColumn: {
+		display: "flex",
+		height: "100%",
+		flexDirection: "column",
+		overflow: "hidden",
+		minHeight: 0,
+		backgroundColor: theme.palette.background.default,
+	},
+
+	welcomeMsg: {
+		backgroundColor: theme.palette.boxticket,
+		display: "flex",
+		justifyContent: "center",
+		alignItems: "center",
+		height: "100%",
+		textAlign: "center",
+	},
+}));
+
+const TicketsManagerTabs = ({ overviewInMainPanel = false }) => {
+  const classes = useStyles();
+  const history = useHistory();
+  const location = useLocation();
+  const { ticketId } = useParams();
+
+  const [searchParam, setSearchParam] = useState("");
+  const [tab, setTab] = useState("open");
+  const [showOverview, setShowOverview] = useState(false);
+  const [subTab, setSubTab] = useState("conversations"); // Sub-aba: "conversations" ou "groups"
+  const [newTicketModalOpen, setNewTicketModalOpen] = useState(false);
+  const [showAllTickets, setShowAllTickets] = useState(false);
+  const searchInputRef = useRef();
+  const { user } = useContext(AuthContext);
+  const { profile } = user;
+
+  const [openCount, setOpenCount] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [conversationsCount, setConversationsCount] = useState(0);
+  const [groupsCount, setGroupsCount] = useState(0);
+  const [conversationsUnread, setConversationsUnread] = useState(0);
+  const [groupsUnread, setGroupsUnread] = useState(0);
+
+  // Hook para notificação sonora de tickets pendentes
+  usePendingTicketNotification();
+
+  const userQueueIds = user.queues.map((q) => q.id);
+  const [selectedQueueIds, setSelectedQueueIds] = useState(userQueueIds || []);
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [selectedUsers, setSelectedUsers] = useState([]);
+  const [filterMenuAnchor, setFilterMenuAnchor] = useState(null);
+  const [checkMsgIsGroup, setCheckMsgIsGroup] = useState("enabled");
+  const { getAll: getSettings } = useSettings();
+
+  useEffect(() => {
+    if (user.profile.toUpperCase() === "ADMIN") {
+      setShowAllTickets(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const tabParam = params.get("tab");
+    if (!tabParam) return;
+
+    if (tabParam === "overview") {
+      setShowOverview(true);
+      setTab("open");
+    } else if (tabParam === "open" || tabParam === "pending") {
+      setTab(tabParam);
+    }
+
+    const queueIdsParam = params.get("queueIds");
+    if (queueIdsParam) {
+      try {
+        const parsed = JSON.parse(queueIdsParam);
+        if (Array.isArray(parsed)) {
+          setSelectedQueueIds(parsed);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const usersParam = params.get("users");
+    if (usersParam) {
+      try {
+        const parsed = JSON.parse(usersParam);
+        if (Array.isArray(parsed)) {
+          setSelectedUsers(parsed);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (tabParam === "open" || tabParam === "pending") {
+      history.replace(location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  useEffect(() => {
+    if (tab === "search") {
+      searchInputRef.current.focus();
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    const fetchGroupSetting = async () => {
+      try {
+        const settings = await getSettings();
+        const setting = settings.find((s) => s.key === "CheckMsgIsGroup");
+        setCheckMsgIsGroup(setting?.value || "enabled");
+      } catch (error) {
+        setCheckMsgIsGroup("enabled");
+      }
+    };
+
+    fetchGroupSetting();
+  }, [getSettings]);
+
+  useEffect(() => {
+    if (checkMsgIsGroup === "enabled" && subTab === "groups") {
+      setSubTab("conversations");
+    }
+  }, [checkMsgIsGroup, subTab]);
+
+  useEffect(() => {
+    const effectiveGroupsCount = checkMsgIsGroup === "enabled" ? 0 : groupsCount;
+    setOpenCount(conversationsCount + effectiveGroupsCount);
+  }, [checkMsgIsGroup, conversationsCount, groupsCount]);
+
+  let searchTimeout;
+
+  const handleSearch = (e) => {
+    const searchedTerm = e.target.value.toLowerCase();
+
+    clearTimeout(searchTimeout);
+
+    if (searchedTerm === "") {
+      setSearchParam(searchedTerm);
+      setTab("open");
+      setShowOverview(false);
+      return;
+    }
+
+    searchTimeout = setTimeout(() => {
+      setSearchParam(searchedTerm);
+      if (searchedTerm !== "") {
+        setTab("search");
+      }
+    }, 500);
+  };
+
+  const handleChangeTab = (e, newValue) => {
+    if (newValue === "finalizadas") {
+      history.push("/tickets/finalizadas");
+      return;
+    }
+    setTab(newValue);
+    // Resetar sub-aba quando mudar de aba principal
+    if (newValue === "open") {
+      setSubTab("conversations");
+    }
+  };
+
+  const handleChangeSubTab = (e, newValue) => {
+    setSubTab(newValue);
+  };
+
+  const handleOverviewDrillDown = ({ type, row }) => {
+    setShowOverview(false);
+    const targetTab =
+      row.pending > 0 && row.pending >= row.active ? "pending" : "open";
+
+    if (type === "queue" && row.id != null) {
+      setSelectedQueueIds([row.id]);
+      setSelectedUsers([]);
+      setTab(targetTab);
+      if (targetTab === "open") {
+        setSubTab("conversations");
+      }
+      return;
+    }
+    if (type === "user" && row.id != null) {
+      setSelectedUsers([row.id]);
+      if (!showAllTickets && user.profile.toUpperCase() !== "ADMIN") {
+        setShowAllTickets(true);
+      }
+      setTab(targetTab);
+      if (targetTab === "open") {
+        setSubTab("conversations");
+      }
+    }
+  };
+
+  const handleCloseOrOpenTicket = (ticket) => {
+    setNewTicketModalOpen(false);
+    if (ticket !== undefined && ticket.uuid !== undefined) {
+      setShowOverview(false);
+      history.push(`/tickets/${ticket.uuid}`);
+    }
+  };
+
+  useEffect(() => {
+    if (ticketId) {
+      setShowOverview(false);
+    }
+  }, [ticketId]);
+
+  const handleSelectedTags = (selecteds) => {
+    const tags = selecteds.map((t) => t.id);
+    setSelectedTags(tags);
+  };
+
+  const handleSelectedUsers = (selecteds) => {
+    const ids = (selecteds || [])
+      .map((t) => (t != null && typeof t === "object" ? t.id : t))
+      .filter((id) => id != null && !Number.isNaN(Number(id)))
+      .map((id) => Number(id));
+    setSelectedUsers(ids);
+  };
+
+  const handleOpenFilterMenu = (event) => {
+    setFilterMenuAnchor(event.currentTarget);
+  };
+
+  const handleCloseFilterMenu = () => {
+    setFilterMenuAnchor(null);
+  };
+
+  const filterMenuOpen = Boolean(filterMenuAnchor);
+  const hideGroupsTab = checkMsgIsGroup === "enabled";
+
+  const renderMainPanel = () => {
+    if (showOverview) {
+      return (
+        <TicketsOverview
+          showAllTickets={showAllTickets}
+          selectedQueueIds={selectedQueueIds}
+          onDrillDown={handleOverviewDrillDown}
+          onClose={() => setShowOverview(false)}
+        />
+      );
+    }
+
+    if (ticketId) {
+      return <Ticket />;
+    }
+
+    return (
+      <Paper square variant="outlined" className={classes.welcomeMsg} />
+    );
+  };
+
+  const sidebarContent = (
+    <Paper elevation={0} variant="outlined" className={classes.ticketsWrapper}>
+      <NewTicketModal
+        modalOpen={newTicketModalOpen}
+        onClose={(ticket) => {
+          
+          handleCloseOrOpenTicket(ticket);
+        }}
+      />
+      <Paper elevation={0} square className={classes.tabsHeader}>
+        <Tabs
+          value={tab === "search" ? "open" : tab}
+          onChange={(e, newValue) => handleChangeTab(e, newValue)}
+          variant="fullWidth"
+          indicatorColor="primary"
+          textColor="primary"
+          className={classes.tabsContainer}
+        >
+          <Tab
+            value="open"
+            icon={<MoveToInboxIcon fontSize="small" />}
+            label={
+              <Badge
+                badgeContent={openCount > 0 ? openCount : 0}
+                color="error"
+                className={classes.badge}
+                invisible={openCount === 0}
+              >
+                <Typography variant="body2" style={{ paddingLeft: 8 }}>
+                  {i18n.t("tickets.tabs.open.title")}
+                </Typography>
+              </Badge>
+            }
+            className={classes.tab}
+          />
+          <Tab
+            value="pending"
+            icon={<HourglassEmptyIcon fontSize="small" />}
+            label={
+              <Badge
+                badgeContent={pendingCount > 0 ? pendingCount : 0}
+                color="error"
+                className={classes.badge}
+                invisible={pendingCount === 0}
+              >
+                <Typography variant="body2" style={{ paddingLeft: 8 }}>
+                  {i18n.t("ticketsList.pendingHeader")}
+                </Typography>
+              </Badge>
+            }
+            className={classes.tab}
+          />
+          <Tab
+            value="finalizadas"
+            icon={<HistoryIcon fontSize="small" />}
+            label={
+              <Typography variant="body2" style={{ paddingLeft: 8 }}>
+                {i18n.t("tickets.tabs.finalizadas.title")}
+              </Typography>
+            }
+            className={classes.tab}
+          />
+        </Tabs>
+        {tab === "search" && (
+          <Box display="flex" alignItems="center" style={{ marginLeft: "auto", paddingRight: 8 }}>
+            <SearchIcon fontSize="small" style={{ marginRight: 4 }} />
+            <Typography variant="body2" color="textSecondary">
+              {i18n.t("tickets.tabs.search.title")}
+            </Typography>
+          </Box>
+        )}
+      </Paper>
+      <Paper square elevation={0} className={classes.ticketOptionsBox}>
+        {tab === "open" && (
+          <div className={classes.subTabsContainer}>
+            <Tabs
+              value={subTab}
+              onChange={handleChangeSubTab}
+              indicatorColor="primary"
+              textColor="primary"
+              variant="fullWidth"
+            >
+              <Tab
+                value="conversations"
+                label={
+                  <Badge
+                    badgeContent={conversationsCount > 0 ? conversationsCount : 0}
+                    color="primary"
+                    className={classes.badge}
+                    invisible={conversationsCount === 0}
+                  >
+                    <Box>
+                      <Typography variant="caption" style={{ fontWeight: 500 }}>
+                        {i18n.t("tickets.tabs.subTabs.conversations")}
+                      </Typography>
+                      {conversationsUnread > 0 && (
+                        <Typography variant="caption" display="block" style={{ color: "var(--primary-color, #1976d2)", fontWeight: 600, fontSize: "0.65rem" }}>
+                          {i18n.t("ticketsList.summaryUnread", { count: conversationsUnread })}
+                        </Typography>
+                      )}
+                    </Box>
+                  </Badge>
+                }
+                style={{ minWidth: 90, textTransform: "none" }}
+              />
+              {!hideGroupsTab && (
+                <Tab
+                  value="groups"
+                  label={
+                    <Badge
+                      badgeContent={groupsCount > 0 ? groupsCount : 0}
+                      color="primary"
+                      className={classes.badge}
+                      invisible={groupsCount === 0}
+                    >
+                      <Box>
+                        <Typography variant="caption" style={{ fontWeight: 500 }}>
+                          {i18n.t("tickets.tabs.subTabs.groups")}
+                        </Typography>
+                        {groupsUnread > 0 && (
+                          <Typography variant="caption" display="block" style={{ color: "var(--primary-color, #1976d2)", fontWeight: 600, fontSize: "0.65rem" }}>
+                            {i18n.t("ticketsList.summaryUnread", { count: groupsUnread })}
+                          </Typography>
+                        )}
+                      </Box>
+                    </Badge>
+                  }
+                  style={{ minWidth: 90, textTransform: "none" }}
+                />
+              )}
+            </Tabs>
+          </div>
+        )}
+        {tab === "search" ? (
+          <div className={classes.serachInputWrapper} style={{ flex: 1, maxWidth: "none" }}>
+            <SearchIcon className={classes.searchIcon} />
+            <InputBase
+              className={classes.searchInput}
+              inputRef={searchInputRef}
+              placeholder={i18n.t("tickets.search.placeholder")}
+              type="search"
+              onChange={handleSearch}
+            />
+          </div>
+        ) : (
+          <div className={classes.actionButtonsContainer}>
+            {check(user.profile, "tickets-manager:showall") && (
+              <Button
+                size="small"
+                variant={showAllTickets ? "contained" : "outlined"}
+                color="primary"
+                onClick={() => setShowAllTickets((prevState) => !prevState)}
+              >
+                {showAllTickets ? "Todos" : "Meus"}
+              </Button>
+            )}
+            <Tooltip title={i18n.t("tickets.tabs.overview.title")}>
+              <IconButton
+                size="small"
+                color="primary"
+                onClick={() => setShowOverview((prev) => !prev)}
+                style={
+                  showOverview
+                    ? { backgroundColor: "rgba(25, 118, 210, 0.12)" }
+                    : undefined
+                }
+              >
+                <DashboardIcon />
+              </IconButton>
+            </Tooltip>
+            <IconButton
+              color="primary"
+              onClick={() => setNewTicketModalOpen(true)}
+              size="small"
+            >
+              <AddIcon />
+            </IconButton>
+            <IconButton
+              onClick={handleOpenFilterMenu}
+              size="small"
+              color={filterMenuOpen ? "primary" : "default"}
+            >
+              <FilterListIcon />
+            </IconButton>
+          </div>
+        )}
+        <Menu
+          anchorEl={filterMenuAnchor}
+          open={filterMenuOpen}
+          onClose={handleCloseFilterMenu}
+          className={classes.filterMenu}
+        >
+          <Box className={classes.filterMenuSection}>
+            <Typography variant="caption" color="textSecondary" style={{ padding: "8px 16px" }}>
+              Filas
+            </Typography>
+            <TicketsQueueSelect
+              selectedQueueIds={selectedQueueIds}
+              userQueues={user?.queues}
+              onChange={(values) => setSelectedQueueIds(values)}
+            />
+          </Box>
+          {profile === "admin" && (
+            <>
+              <Divider />
+              <Box className={classes.filterMenuSection}>
+                <Typography variant="caption" color="textSecondary" style={{ padding: "8px 16px" }}>
+                  Atendentes
+                </Typography>
+                <UsersFilter onFiltered={handleSelectedUsers} initialUsers={selectedUsers} />
+              </Box>
+            </>
+          )}
+          <Divider />
+          <Box className={classes.filterMenuSection}>
+            <Typography variant="caption" color="textSecondary" style={{ padding: "8px 16px" }}>
+              Outras Opções
+            </Typography>
+            <MenuItem 
+              onClick={() => {
+                history.push("/tickets/finalizadas");
+                handleCloseFilterMenu();
+              }}
+              className={classes.filterMenuItem}
+            >
+              <Box display="flex" alignItems="center" gap={1}>
+                <HistoryIcon fontSize="small" />
+                <Typography>{i18n.t("tickets.tabs.finalizadas.title")}</Typography>
+              </Box>
+            </MenuItem>
+            <MenuItem 
+              onClick={() => {
+                setTab("search");
+                handleCloseFilterMenu();
+              }}
+              className={classes.filterMenuItem}
+            >
+              <Box display="flex" alignItems="center" gap={1}>
+                <SearchIcon fontSize="small" />
+                <Typography>{i18n.t("tickets.tabs.search.title")}</Typography>
+              </Box>
+            </MenuItem>
+          </Box>
+        </Menu>
+      </Paper>
+      {showOverview && !overviewInMainPanel ? (
+        <TicketsOverview
+          showAllTickets={showAllTickets}
+          selectedQueueIds={selectedQueueIds}
+          onDrillDown={handleOverviewDrillDown}
+          onClose={() => setShowOverview(false)}
+        />
+      ) : (
+        <>
+      <TabPanel value={tab} name="open" className={classes.ticketsWrapper} keepMounted={true}>
+        {subTab === "conversations" && (
+          <TicketsList
+            status="open"
+            showAll={showAllTickets}
+            users={selectedUsers}
+            selectedQueueIds={selectedQueueIds}
+            updateCount={(data) => {
+              const val = typeof data === "object" ? data.total : data;
+              const unread = typeof data === "object" ? (data.unread || 0) : 0;
+              setConversationsCount(val);
+              setConversationsUnread(unread);
+            }}
+            filterIsGroup={false}
+          />
+        )}
+        {!hideGroupsTab && subTab === "groups" && (
+          <TicketsList
+            status="open"
+            showAll={showAllTickets}
+            users={selectedUsers}
+            selectedQueueIds={selectedQueueIds}
+            updateCount={(data) => {
+              const val = typeof data === "object" ? data.total : data;
+              const unread = typeof data === "object" ? (data.unread || 0) : 0;
+              setGroupsCount(val);
+              setGroupsUnread(unread);
+            }}
+            filterIsGroup={true}
+          />
+        )}
+      </TabPanel>
+      <TabPanel value={tab} name="pending" className={classes.ticketsWrapper} keepMounted={true}>
+        <TicketsList
+          status="pending"
+          showAll={showAllTickets}
+          users={selectedUsers}
+          selectedQueueIds={selectedQueueIds}
+          updateCount={(data) => setPendingCount(typeof data === "object" ? data.total : data)}
+        />
+      </TabPanel>
+      <TabPanel value={tab} name="search" className={classes.ticketsWrapper}>
+        <TagsFilter onFiltered={handleSelectedTags} />
+        {profile === "admin" && (
+          <UsersFilter onFiltered={handleSelectedUsers} initialUsers={selectedUsers} />
+        )}
+        <TicketsList
+          searchParam={searchParam}
+          showAll={true}
+          tags={selectedTags}
+          users={selectedUsers}
+          selectedQueueIds={selectedQueueIds}
+        />
+      </TabPanel>
+        </>
+      )}
+    </Paper>
+  );
+
+  if (overviewInMainPanel) {
+    return (
+      <div className={classes.splitLayout}>
+        <Grid container spacing={0} style={{ height: "100%" }}>
+          <Grid item xs={4} className={classes.sidebarColumn}>
+            {sidebarContent}
+          </Grid>
+          <Grid item xs={8} className={classes.mainColumn}>
+            {renderMainPanel()}
+          </Grid>
+        </Grid>
+      </div>
+    );
+  }
+
+  return sidebarContent;
+};
+
+export default TicketsManagerTabs;

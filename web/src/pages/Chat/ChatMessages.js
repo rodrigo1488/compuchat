@@ -1,0 +1,613 @@
+import React, { useContext, useEffect, useRef, useState } from "react";
+import {
+  Box,
+  IconButton,
+  Input,
+  makeStyles,
+  Paper,
+  Typography,
+  Avatar,
+} from "@material-ui/core";
+import SendIcon from "@material-ui/icons/Send";
+import AttachFileIcon from "@material-ui/icons/AttachFile";
+import CloseIcon from "@material-ui/icons/Close";
+
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { useDate } from "../../hooks/useDate";
+import api from "../../services/api";
+import { i18n } from "../../translate/i18n";
+import { getBackendUrl } from "../../config/backendUrl";
+
+const useStyles = makeStyles((theme) => ({
+  mainContainer: {
+    display: "flex",
+    flexDirection: "column",
+    position: "relative",
+    flex: 1,
+    height: "100%",
+    maxHeight: "100%",
+    overflow: "hidden",
+    borderRadius: theme.spacing(2),
+    minHeight: 0,
+    backgroundColor: theme.palette.background.paper,
+    border: `1px solid ${theme.palette.type === "dark" ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)"}`,
+  },
+  messageList: {
+    position: "relative",
+    overflowY: "auto",
+    overflowX: "hidden",
+    flex: 1,
+    minHeight: 0,
+    height: "100%",
+    padding: theme.spacing(2),
+    ...theme.scrollbarStyles,
+    backgroundColor: theme.palette.type === "dark" ? "#0B1120" : "#F9FAFB",
+    display: "flex",
+    flexDirection: "column",
+  },
+  messagesWrapper: {
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "flex-end",
+    minHeight: "min-content",
+  },
+  inputArea: {
+    flexShrink: 0,
+    padding: theme.spacing(2),
+    backgroundColor: theme.palette.background.paper,
+    borderTop: `1px solid ${theme.palette.type === "dark" ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)"}`,
+    position: "sticky",
+    bottom: 0,
+    zIndex: 10,
+  },
+  inputContainer: {
+    display: "flex",
+    alignItems: "flex-end",
+    gap: theme.spacing(1),
+    backgroundColor: theme.palette.type === "dark" ? "#1F2937" : "#FFFFFF",
+    borderRadius: theme.spacing(3),
+    padding: theme.spacing(1, 2),
+    border: `1px solid ${theme.palette.type === "dark" ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)"}`,
+    transition: "all 0.2s ease",
+    "&:focus-within": {
+      borderColor: theme.palette.primary.main,
+      boxShadow: `0 0 0 3px ${theme.palette.type === "dark" ? "rgba(14, 165, 233, 0.1)" : "rgba(14, 165, 233, 0.15)"}`,
+    },
+    [theme.breakpoints.down("sm")]: {
+      padding: theme.spacing(0.75, 1.5),
+      borderRadius: theme.spacing(2),
+    },
+  },
+  input: {
+    flex: 1,
+    padding: theme.spacing(1.5, 0),
+    fontSize: "0.9375rem",
+    color: theme.palette.text.primary,
+    "&::placeholder": {
+      color: theme.palette.text.secondary,
+      opacity: 0.7,
+    },
+    border: "none",
+    outline: "none",
+    backgroundColor: "transparent",
+    resize: "none",
+    maxHeight: "120px",
+    overflowY: "auto",
+    ...theme.scrollbarStylesSoft,
+  },
+  buttonSend: {
+    minWidth: "40px",
+    height: "40px",
+    borderRadius: "50%",
+    backgroundColor: theme.palette.primary.main,
+    color: "#FFFFFF",
+    transition: "all 0.2s ease",
+    "&:hover": {
+      backgroundColor: theme.palette.primary.dark,
+      transform: "scale(1.05)",
+    },
+    "&:disabled": {
+      backgroundColor: theme.palette.type === "dark" ? "#374151" : "#E5E7EB",
+      color: theme.palette.text.secondary,
+    },
+  },
+  messageBubble: {
+    display: "flex",
+    flexDirection: "row",
+    maxWidth: "70%",
+    minWidth: "120px",
+    marginBottom: theme.spacing(1.5),
+    wordWrap: "break-word",
+    animation: "fadeIn 0.3s ease",
+    gap: theme.spacing(1),
+    [theme.breakpoints.down("sm")]: {
+      maxWidth: "85%",
+      minWidth: "100px",
+    },
+  },
+  messageContent: {
+    display: "flex",
+    flexDirection: "column",
+    flex: 1,
+  },
+  messageAvatar: {
+    width: 32,
+    height: 32,
+    flexShrink: 0,
+  },
+  "@keyframes fadeIn": {
+    from: {
+      opacity: 0,
+      transform: "translateY(10px)",
+    },
+    to: {
+      opacity: 1,
+      transform: "translateY(0)",
+    },
+  },
+  boxLeft: {
+    alignSelf: "flex-start",
+    padding: theme.spacing(1.5, 2),
+    backgroundColor: theme.palette.type === "dark" ? "#1F2937" : "#FFFFFF",
+    borderRadius: theme.spacing(2),
+    borderBottomLeftRadius: theme.spacing(0.5),
+    boxShadow: theme.palette.type === "dark" 
+      ? "0 2px 8px rgba(0, 0, 0, 0.3)" 
+      : "0 2px 8px rgba(0, 0, 0, 0.08)",
+    border: `1px solid ${theme.palette.type === "dark" ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)"}`,
+  },
+  boxRight: {
+    alignSelf: "flex-end",
+    padding: theme.spacing(1.5, 2),
+    backgroundColor: theme.palette.type === "dark" ? "#1E3A5F" : "#E3F2FD",
+    borderRadius: theme.spacing(2),
+    borderBottomRightRadius: theme.spacing(0.5),
+    boxShadow: theme.palette.type === "dark" 
+      ? "0 2px 8px rgba(0, 0, 0, 0.3)" 
+      : "0 2px 8px rgba(0, 0, 0, 0.08)",
+    border: `1px solid ${theme.palette.type === "dark" ? "rgba(14, 165, 233, 0.3)" : "rgba(14, 165, 233, 0.2)"}`,
+  },
+  senderName: {
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    marginBottom: theme.spacing(0.5),
+    color: theme.palette.text.secondary,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+  },
+  messageText: {
+    fontSize: "0.9375rem",
+    lineHeight: 1.5,
+    color: theme.palette.text.primary,
+    marginBottom: theme.spacing(0.5),
+    wordBreak: "break-word",
+  },
+  messageTime: {
+    fontSize: "0.6875rem",
+    color: theme.palette.text.secondary,
+    opacity: 0.7,
+    marginTop: theme.spacing(0.25),
+    alignSelf: "flex-end",
+  },
+  previewContainer: {
+    display: "flex",
+    gap: theme.spacing(1),
+    padding: theme.spacing(1.5),
+    marginBottom: theme.spacing(1),
+    flexWrap: "wrap",
+    backgroundColor: theme.palette.type === "dark" 
+      ? "rgba(255, 255, 255, 0.05)" 
+      : "rgba(0, 0, 0, 0.02)",
+    borderRadius: theme.spacing(1),
+    border: `1px solid ${theme.palette.type === "dark" ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)"}`,
+    maxHeight: "200px",
+    overflowY: "auto",
+    ...theme.scrollbarStyles,
+  },
+  previewImage: {
+    position: "relative",
+    width: "120px",
+    height: "120px",
+    borderRadius: theme.spacing(1),
+    overflow: "hidden",
+    border: `2px solid ${theme.palette.primary.main}`,
+    boxShadow: theme.shadows[2],
+    flexShrink: 0,
+  },
+  previewImageImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  previewRemoveButton: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    color: "#FFFFFF",
+    padding: theme.spacing(0.5),
+    minWidth: "auto",
+    width: "28px",
+    height: "28px",
+    "&:hover": {
+      backgroundColor: "rgba(244, 67, 54, 0.9)",
+    },
+  },
+  fileInput: {
+    display: "none",
+  },
+  attachButton: {
+    padding: theme.spacing(1),
+    color: theme.palette.text.secondary,
+    "&:hover": {
+      backgroundColor: theme.palette.type === "dark" 
+        ? "rgba(255, 255, 255, 0.1)" 
+        : "rgba(0, 0, 0, 0.05)",
+    },
+  },
+  messageImage: {
+    maxWidth: "100%",
+    maxHeight: "300px",
+    borderRadius: theme.spacing(1),
+    marginBottom: theme.spacing(0.5),
+    objectFit: "contain",
+  },
+  messageFileLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: theme.spacing(0.5),
+    padding: theme.spacing(0.75, 1),
+    borderRadius: theme.spacing(1),
+    backgroundColor: theme.palette.type === "dark" ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
+    fontSize: "0.875rem",
+    color: theme.palette.primary.main,
+    textDecoration: "none",
+    maxWidth: "100%",
+    wordBreak: "break-all",
+    "&:hover": {
+      textDecoration: "underline",
+    },
+  },
+  previewFileChip: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    padding: theme.spacing(1, 1.5),
+    minWidth: 140,
+    maxWidth: 260,
+    borderRadius: theme.spacing(1),
+    border: `2px solid ${theme.palette.primary.main}`,
+    flexShrink: 0,
+  },
+}));
+
+const isImageFileName = (name) =>
+  name && /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(String(name));
+
+export default function ChatMessages({
+  chat,
+  messages,
+  handleSendMessage,
+  handleLoadMore,
+  scrollToBottomRef,
+  pageInfo,
+  loading,
+}) {
+  const classes = useStyles();
+  const { user } = useContext(AuthContext);
+  const { datetimeToClient } = useDate();
+  const baseRef = useRef();
+  const fileInputRef = useRef();
+
+  const [contentMessage, setContentMessage] = useState("");
+  const [selectedAttachments, setSelectedAttachments] = useState([]);
+
+  const scrollToBottom = () => {
+    if (baseRef.current) {
+      baseRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  };
+
+  const unreadMessages = (chat) => {
+    if (chat !== undefined) {
+      const currentUser = chat.users.find((u) => u.userId === user.id);
+      return currentUser.unreads > 0;
+    }
+    return 0;
+  };
+
+  useEffect(() => {
+    if (chat && unreadMessages(chat) > 0) {
+      try {
+        api.post(`/chats/${chat.id}/read`, { userId: user.id });
+      } catch (err) {}
+    }
+    scrollToBottomRef.current = scrollToBottom;
+    // Scroll to bottom quando mensagens mudam
+    if (messages.length > 0) {
+      setTimeout(() => {
+        scrollToBottom();
+      }, 100);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, chat]);
+
+  const handleScroll = (e) => {
+    const { scrollTop } = e.currentTarget;
+    if (!pageInfo.hasMore || loading) return;
+    if (scrollTop < 600) {
+      handleLoadMore();
+    }
+  };
+
+  const addFileAsAttachment = (file) => {
+    const isImage = file.type.startsWith("image/");
+    if (isImage) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setSelectedAttachments((prev) => [
+          ...prev,
+          {
+            file,
+            preview: event.target.result,
+            name: file.name,
+            isImage: true,
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setSelectedAttachments((prev) => [
+        ...prev,
+        { file, preview: null, name: file.name, isImage: false },
+      ]);
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    files.forEach((file) => addFileAsAttachment(file));
+    e.target.value = "";
+  };
+
+  /** Colar captura de tela (Ctrl+V) como anexo de imagem, sem roubar texto comum. */
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items?.length) return;
+
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        e.preventDefault();
+        const raw = item.getAsFile();
+        if (!raw) continue;
+        const fallbackName = `captura-${Date.now()}.png`;
+        const name =
+          raw.name && !/^blob$/i.test(raw.name) ? raw.name : fallbackName;
+        const file =
+          raw instanceof File && raw.name && !/^blob$/i.test(raw.name)
+            ? raw
+            : new File([raw], name, { type: raw.type || "image/png" });
+        addFileAsAttachment(file);
+        break;
+      }
+    }
+  };
+
+  const removeAttachment = (index) => {
+    setSelectedAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSend = async () => {
+    if (contentMessage.trim() === "" && selectedAttachments.length === 0) return;
+
+    const messageText = contentMessage.trim();
+
+    if (selectedAttachments.length > 0) {
+      for (let i = 0; i < selectedAttachments.length; i += 1) {
+        const att = selectedAttachments[i];
+        const formData = new FormData();
+        formData.append("media", att.file);
+        if (messageText) {
+          formData.append("message", messageText);
+        }
+
+        const tempId = `temp-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2)}-${i}`;
+        const optimisticMsg = {
+          id: tempId,
+          senderId: user.id,
+          sender: { name: user.name, avatar: user.avatar },
+          message: messageText || "",
+          mediaName: att.name,
+          mediaPreview: att.isImage ? att.preview : null,
+          createdAt: new Date().toISOString(),
+          optimistic: true,
+          chatId: chat?.id,
+        };
+
+        await handleSendMessage(formData, true, optimisticMsg);
+      }
+      setSelectedAttachments([]);
+      setContentMessage("");
+    } else {
+      const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const optimisticMsg = {
+        id: tempId,
+        senderId: user.id,
+        sender: { name: user.name, avatar: user.avatar },
+        message: messageText,
+        createdAt: new Date().toISOString(),
+        optimistic: true,
+        chatId: chat?.id,
+      };
+
+      await handleSendMessage(messageText, false, optimisticMsg);
+      setContentMessage("");
+    }
+
+    setTimeout(() => {
+      scrollToBottom();
+    }, 100);
+  };
+
+  return (
+    <Paper className={classes.mainContainer} elevation={0}>
+      <div onScroll={handleScroll} className={classes.messageList}>
+        <div className={classes.messagesWrapper}>
+          {Array.isArray(messages) &&
+            messages.map((item, key) => {
+              const isOwnMessage = item.senderId === user.id;
+              const avatarUrl = item.sender?.avatar 
+                ? `${getBackendUrl()}/public/${item.sender.avatar}`
+                : null;
+              return (
+                <Box 
+                  key={item.id != null ? String(item.id) : `msg-${key}`} 
+                  className={`${classes.messageBubble} ${isOwnMessage ? classes.boxRight : classes.boxLeft}`}
+                  style={{
+                    alignSelf: isOwnMessage ? "flex-end" : "flex-start",
+                    flexDirection: isOwnMessage ? "row-reverse" : "row",
+                    ...(item.optimistic ? { opacity: 0.92 } : {}),
+                  }}
+                >
+                  <Avatar 
+                    src={avatarUrl} 
+                    alt={item.sender.name}
+                    className={classes.messageAvatar}
+                  >
+                    {item.sender.name?.charAt(0).toUpperCase()}
+                  </Avatar>
+                  <div className={classes.messageContent}>
+                    <Typography className={classes.senderName}>
+                      {item.sender.name}
+                    </Typography>
+                    {item.mediaPreview && !item.mediaPath &&
+                      (isImageFileName(item.mediaName || "image.png") ? (
+                        <img
+                          src={item.mediaPreview}
+                          alt=""
+                          className={classes.messageImage}
+                        />
+                      ) : (
+                        <Typography
+                          variant="caption"
+                          className={classes.messageText}
+                          component="div"
+                        >
+                          📎 {item.mediaName || "arquivo"}
+                        </Typography>
+                      ))}
+                    {item.mediaPath &&
+                      (isImageFileName(item.mediaName || item.mediaPath) ? (
+                        <img
+                          src={`${getBackendUrl()}/public/${item.mediaPath}`}
+                          alt=""
+                          className={classes.messageImage}
+                          onError={(e) => {
+                            e.target.style.display = "none";
+                          }}
+                        />
+                      ) : (
+                        <a
+                          href={`${getBackendUrl()}/public/${item.mediaPath}`}
+                          download={item.mediaName || true}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={classes.messageFileLink}
+                        >
+                          📎 {item.mediaName || item.mediaPath}
+                        </a>
+                      ))}
+                    {item.message && item.message.trim() && (
+                      <Typography className={classes.messageText}>
+                        {item.message}
+                      </Typography>
+                    )}
+                    <Typography className={classes.messageTime}>
+                      {datetimeToClient(item.createdAt)}
+                    </Typography>
+                  </div>
+                </Box>
+              );
+            })}
+          <div ref={baseRef}></div>
+        </div>
+      </div>
+      <div className={classes.inputArea}>
+        {selectedAttachments.length > 0 && (
+          <div className={classes.previewContainer}>
+            {selectedAttachments.map((att, index) => (
+              <div key={index} className={att.isImage ? classes.previewImage : classes.previewFileChip}>
+                {att.isImage ? (
+                  <img src={att.preview} alt="" className={classes.previewImageImg} />
+                ) : (
+                  <Typography variant="caption" noWrap style={{ flex: 1 }} title={att.name}>
+                    📎 {att.name}
+                  </Typography>
+                )}
+                <IconButton
+                  className={att.isImage ? classes.previewRemoveButton : undefined}
+                  size="small"
+                  onClick={() => removeAttachment(index)}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className={classes.inputContainer}>
+          <Input
+            multiline
+            rowsMax={4}
+            value={contentMessage}
+            onPaste={handlePaste}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && (contentMessage.trim() !== "" || selectedAttachments.length > 0)) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            onChange={(e) => setContentMessage(e.target.value)}
+            className={classes.input}
+            placeholder={i18n.t("chat.inputPlaceholder")}
+            disableUnderline
+            inputProps={{
+              style: {
+                padding: 0,
+                margin: 0,
+              }
+            }}
+          />
+          <input
+            type="file"
+            ref={fileInputRef}
+            className={classes.fileInput}
+            accept="image/*,video/*,audio/*,.pdf,.txt,.doc,.docx,.xls,.xlsx,.csv,.zip,.rar,.json"
+            onChange={handleFileSelect}
+            multiple
+          />
+          <IconButton
+            onClick={() => fileInputRef.current?.click()}
+            className={classes.attachButton}
+            size="small"
+          >
+            <AttachFileIcon fontSize="small" />
+          </IconButton>
+          <IconButton
+            onClick={handleSend}
+            className={classes.buttonSend}
+            disabled={contentMessage.trim() === "" && selectedAttachments.length === 0}
+            size="small"
+          >
+            <SendIcon fontSize="small" />
+          </IconButton>
+        </div>
+      </div>
+    </Paper>
+  );
+}

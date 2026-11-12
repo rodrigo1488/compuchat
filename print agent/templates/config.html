@@ -1,0 +1,1122 @@
+{% extends "base.html" %}
+{% block title %}Configuração - Print Agent{% endblock %}
+{% block extra_css %}
+<style>
+    .printers-grid { display: grid; gap: 0.9rem; }
+    .printer-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem;
+        background: linear-gradient(180deg, #fbfcfd 0%, #f6f9fb 100%);
+    }
+    .printer-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.85rem;
+        gap: 0.5rem;
+    }
+    .printer-card-title { font-size: 1rem; font-weight: 700; margin: 0; }
+    .printer-card-badge {
+        font-size: 0.72rem;
+        color: #155e75;
+        background: #e0f2fe;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        font-weight: 700;
+    }
+    .printer-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+    .section-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem;
+        background: #fafcfd;
+        margin-bottom: 0.9rem;
+    }
+    .check-row {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+    }
+    .check-row input { width: auto; }
+    .check-row label { margin: 0; font-weight: 600; }
+    .pos-images-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+    }
+    .pos-image-card {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #fff;
+    }
+    .pos-image-card img,
+    .pos-image-missing {
+        width: 100%;
+        height: 110px;
+        object-fit: cover;
+        display: block;
+        background: #eef2f5;
+    }
+    .pos-image-missing {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #9a3412;
+        font-size: 0.75rem;
+        font-weight: 700;
+    }
+    .pos-image-card figcaption {
+        padding: 0.45rem 0.55rem 0.6rem;
+        font-size: 0.75rem;
+        line-height: 1.3;
+    }
+    .pos-image-card .muted { color: #64748b; }
+    .section-title { margin: 0 0 0.55rem; font-size: 1rem; }
+    .segment { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0.15rem 0 0.85rem; }
+    .segment-item { display: inline-flex; margin: 0; font-weight: 700; position: relative; }
+    .segment-item input {
+        position: absolute;
+        opacity: 0;
+        width: 1px;
+        height: 1px;
+    }
+    .segment-item span {
+        display: inline-block;
+        padding: 0.45rem 0.9rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+    .segment-item input:checked + span {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+    }
+    .segment-item input:focus-visible + span {
+        box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
+    }
+    .field-legend {
+        margin: 0.15rem 0 0.55rem;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+    }
+    .note {
+        margin: 0.15rem 0 0.85rem;
+        padding: 0.55rem 0.75rem;
+        border-radius: 10px;
+        background: var(--warn-soft);
+        color: #7a4b08;
+        font-size: 0.82rem;
+    }
+    .subgroup {
+        margin-top: 0.35rem;
+        padding-top: 0.85rem;
+        border-top: 1px solid var(--line);
+    }
+    .fold { padding: 0; }
+    .fold > summary {
+        cursor: pointer;
+        list-style: none;
+        font-weight: 700;
+        font-size: 1rem;
+        padding: 1rem;
+    }
+    .fold > summary::-webkit-details-marker { display: none; }
+    .fold > summary::before { content: '▾  '; color: var(--muted); }
+    .fold:not([open]) > summary::before { content: '▸  '; }
+    .fold-body { padding: 0 1rem 0.35rem; }
+    .fold.is-secondary { background: #f3f6f8; }
+    .sync-status { margin: 0.55rem 0 0; min-height: 1.1rem; font-size: 0.86rem; }
+    .sync-status.is-ok { color: #0f766e; }
+    .sync-status.is-err { color: #9b1c1c; }
+</style>
+{% endblock %}
+{% block content %}
+<h2 class="page-title">Configuração</h2>
+<p class="page-sub">Uma aba por assunto. A troca de destino e do modo UniPlus é imediata. Salve no final.</p>
+
+{% if message %}
+<div class="alert {{ 'alert-success' if message_type == 'success' else 'alert-error' }}">{{ message }}</div>
+{% endif %}
+
+<form method="post" action="/config" id="config-form">
+    <div class="tabs" role="tablist">
+        <button type="button" class="tab-btn active" data-tab="conexao">Conexão</button>
+        <button type="button" class="tab-btn" data-tab="impressoras">Impressoras</button>
+        <button type="button" class="tab-btn" data-tab="uniplus">ERP</button>
+        <button type="button" class="tab-btn" data-tab="pos">POS local</button>
+        <button type="button" class="tab-btn" data-tab="opcoes">Opções</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-conexao">
+        <div class="section-card">
+            <h3 style="margin-bottom: 0.65rem;">Conexão com o Compuchat</h3>
+            <div class="form-group">
+                <label for="ws_url">URL WebSocket</label>
+                <input type="url" id="ws_url" name="ws_url" value="{{ ws_url }}" placeholder="ws://localhost:4000/ws/print">
+                <p class="hint">Local: <code>ws://localhost:4000/ws/print</code> · Rede: <code>ws://IP_DO_SERVIDOR:4000/ws/print</code></p>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-panel" id="tab-impressoras">
+        <p class="hint" style="margin-bottom: 0.85rem;">
+            Cada impressora usa um Device ID + Token do Compuchat e aponta para uma impressora física (rede ou Windows local).
+        </p>
+        <div id="printers-container" class="printers-grid">
+            {% for p in printers %}
+            <div class="printer-block printer-card" data-index="{{ loop.index0 }}">
+                <div class="printer-card-header">
+                    <h3 class="printer-card-title">Impressora {{ loop.index }}</h3>
+                    <span class="printer-card-badge">Dispositivo</span>
+                </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Device ID</label>
+                        <input type="text" name="printer_{{ loop.index0 }}_device_id" value="{{ p.device_id }}" placeholder="ex: cozinha-01">
+                    </div>
+                    <div class="form-group">
+                        <label>Token (Bearer)</label>
+                        <input type="password" name="printer_{{ loop.index0 }}_token" value="{{ p.token }}" placeholder="Token do dispositivo">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Nome (opcional)</label>
+                    <input type="text" name="printer_{{ loop.index0 }}_name" value="{{ p.name }}" placeholder="ex: Cozinha">
+                </div>
+                <p class="field-legend">Conexão</p>
+                <div class="form-group">
+                    <label>Tipo de Conexão</label>
+                    <select name="printer_{{ loop.index0 }}_connection_type" class="connection-type-select" data-index="{{ loop.index0 }}">
+                        <option value="network" {% if p.get('connection_type', 'network') == 'network' %}selected{% endif %}>Rede (IP/Porta)</option>
+                        <option value="local" {% if p.get('connection_type') == 'local' %}selected{% endif %}>Local (Windows)</option>
+                    </select>
+                </div>
+                <div class="network-config" id="network-config-{{ loop.index0 }}" style="{% if p.get('connection_type') == 'local' %}display: none;{% endif %}">
+                    <div class="grid-2">
+                        <div class="form-group">
+                            <label>IP da impressora</label>
+                            <input type="text" name="printer_{{ loop.index0 }}_printer_ip" value="{{ p.printer_ip }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Porta</label>
+                            <input type="number" name="printer_{{ loop.index0 }}_printer_port" value="{{ p.printer_port }}">
+                        </div>
+                    </div>
+                </div>
+                <div class="local-config" id="local-config-{{ loop.index0 }}" style="{% if p.get('connection_type') != 'local' %}display: none;{% endif %}">
+                    <div class="form-group">
+                        <label>Impressora Local</label>
+                        <select name="printer_{{ loop.index0 }}_printer_name_local" id="printer-name-local-{{ loop.index0 }}" data-saved-value="{{ p.get('printer_name_local', '') }}">
+                            <option value="">Carregando impressoras...</option>
+                        </select>
+                        <button type="button" class="btn-refresh-printers btn-ghost" data-index="{{ loop.index0 }}" style="margin-top: 0.5rem;">Atualizar lista</button>
+                    </div>
+                </div>
+                <div class="network-only-config" id="network-only-config-{{ loop.index0 }}" style="{% if p.get('connection_type') == 'local' %}display: none;{% endif %}">
+                    <div class="form-group">
+                        <label>Tipo</label>
+                        <select name="printer_{{ loop.index0 }}_printer_type">
+                            <option value="raw" {% if p.printer_type == 'raw' %}selected{% endif %}>RAW (porta 9100)</option>
+                            <option value="ipp" {% if p.printer_type == 'ipp' %}selected{% endif %}>IPP</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Largura do papel (caracteres)</label>
+                        <input type="number" name="printer_{{ loop.index0 }}_paper_width" value="{{ p.paper_width }}" min="24" max="48">
+                    </div>
+                    <div class="form-group">
+                        <label>Codificação</label>
+                        <select name="printer_{{ loop.index0 }}_printer_encoding">
+                            <option value="cp850" {% if p.printer_encoding == 'cp850' %}selected{% endif %}>CP850</option>
+                            <option value="cp860" {% if p.printer_encoding == 'cp860' %}selected{% endif %}>CP860</option>
+                            <option value="cp1252" {% if p.printer_encoding == 'cp1252' %}selected{% endif %}>CP1252</option>
+                            <option value="utf8" {% if p.printer_encoding == 'utf8' %}selected{% endif %}>UTF-8</option>
+                        </select>
+                    </div>
+                </div>
+                <p class="field-legend">Cupom</p>
+                <p class="hint" style="margin-bottom: 0.6rem;">Automático segue o tamanho do pedido. Os outros tamanhos fixam o cupom.</p>
+                <div class="form-group">
+                    <label>Cardápio e delivery</label>
+                    <select name="printer_{{ loop.index0 }}_font_mode">
+                        <option value="auto" {% if (p.get('font_mode') or 'auto') == 'auto' %}selected{% endif %}>Automático (tamanho do pedido)</option>
+                        <option value="1" {% if p.get('font_mode') == '1' %}selected{% endif %}>Normal</option>
+                        <option value="2" {% if p.get('font_mode') == '2' %}selected{% endif %}>Grande</option>
+                        <option value="3" {% if p.get('font_mode') == '3' %}selected{% endif %}>Extra grande</option>
+                    </select>
+                </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Consumo no local (POS)</label>
+                        <select name="printer_{{ loop.index0 }}_font_mode_dine_in">
+                            <option value="auto" {% if (p.get('font_mode_dine_in') or 'auto') == 'auto' %}selected{% endif %}>Automático</option>
+                            <option value="1" {% if p.get('font_mode_dine_in') == '1' %}selected{% endif %}>Normal</option>
+                            <option value="2" {% if p.get('font_mode_dine_in') == '2' %}selected{% endif %}>Grande</option>
+                            <option value="3" {% if p.get('font_mode_dine_in') == '3' %}selected{% endif %}>Extra grande</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Para levar (POS)</label>
+                        <select name="printer_{{ loop.index0 }}_font_mode_takeaway">
+                            <option value="auto" {% if (p.get('font_mode_takeaway') or 'auto') == 'auto' %}selected{% endif %}>Automático</option>
+                            <option value="1" {% if p.get('font_mode_takeaway') == '1' %}selected{% endif %}>Normal</option>
+                            <option value="2" {% if p.get('font_mode_takeaway') == '2' %}selected{% endif %}>Grande</option>
+                            <option value="3" {% if p.get('font_mode_takeaway') == '3' %}selected{% endif %}>Extra grande</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="printer-actions">
+                    <button type="button" class="btn-test-printer btn-secondary" data-index="{{ loop.index0 }}">Testar impressora</button>
+                    <button type="button" class="btn-cancel-queue btn-ghost" data-index="{{ loop.index0 }}">Marcar fila como impressa</button>
+                    <button type="button" class="btn-remove btn-danger" aria-label="Remover impressora">Remover</button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <nav class="pager" id="printers-pager" hidden>
+            <button type="button" class="btn btn-ghost" data-pager-prev>Anterior</button>
+            <span class="pager-label" data-pager-label></span>
+            <button type="button" class="btn btn-ghost" data-pager-next>Próxima</button>
+        </nav>
+        <div style="margin-top: 0.9rem;">
+            <button type="button" id="add-printer" class="btn-ghost">+ Adicionar impressora</button>
+        </div>
+    </div>
+
+    <div class="tab-panel" id="tab-uniplus">
+        {% set mg = erp_target == 'maisgestao' %}
+        {% set yoda_on = uniplus_launch_mode == 'yoda' %}
+        {% set pdv_http = uniplus_http_server == 'servidor_pdv' %}
+        <div class="section-card">
+            <h3 class="section-title">Destino do delivery</h3>
+            <p class="hint">O pedido do Compuchat vai para o UniPlus ou para o PDV Mais Gestão.</p>
+            <div class="segment" role="radiogroup" aria-label="Destino do delivery">
+                <label class="segment-item">
+                    <input type="radio" name="erp_target" value="uniplus" {% if not mg %}checked{% endif %}>
+                    <span>UniPlus</span>
+                </label>
+                <label class="segment-item">
+                    <input type="radio" name="erp_target" value="maisgestao" {% if mg %}checked{% endif %}>
+                    <span>Mais Gestão</span>
+                </label>
+            </div>
+        </div>
+
+        <div id="erp-maisgestao" class="erp-panel {% if not mg %}is-hidden{% endif %}" data-erp-panel="maisgestao">
+            <div class="section-card">
+                <h3 class="section-title">PDV Mais Gestão</h3>
+                <p class="hint">Login da API LAN. Senha em branco mantém a gravada.</p>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="pdv_lan_url">URL LAN</label>
+                        <input type="text" id="pdv_lan_url" name="pdv_lan_url"
+                               value="{{ pdv_lan_url }}"
+                               placeholder="http://127.0.0.1:5050">
+                    </div>
+                    <div class="form-group">
+                        <label for="pdv_lan_email">E-mail</label>
+                        <input type="text" id="pdv_lan_email" name="pdv_lan_email"
+                               value="{{ pdv_lan_email }}"
+                               placeholder="usuario@empresa.com">
+                    </div>
+                    <div class="form-group">
+                        <label for="pdv_lan_password">Senha</label>
+                        <input type="password" id="pdv_lan_password" name="pdv_lan_password"
+                               value=""
+                               placeholder="{% if pdv_lan_password %}•••••• (deixe em branco para manter){% else %}senha{% endif %}">
+                    </div>
+                </div>
+                <div class="form-group check-row">
+                    <input type="checkbox" id="maisgestao_product_sync_poll" name="maisgestao_product_sync_poll" value="on" {% if maisgestao_product_sync_poll %}checked{% endif %}>
+                    <label for="maisgestao_product_sync_poll">Sincronizar produtos a cada 1 min</label>
+                </div>
+                <p class="hint">Novos produtos entram sozinhos. Para não reenviar um item, desligue o sync na tela Produtos. Use o código interno ou o EAN — UUID não cabe no campo de 20 caracteres.</p>
+            </div>
+        </div>
+
+        <div id="erp-uniplus" class="erp-panel {% if mg %}is-hidden{% endif %}" data-erp-panel="uniplus">
+            <div class="section-card">
+                <h3 class="section-title">UniPlus Gourmet</h3>
+                <p class="hint">Grava o delivery em CONTAMESA. A conexão no Postgres só abre quando precisa, para não derrubar o Unico.</p>
+                <div class="form-group check-row">
+                    <input type="checkbox" id="uniplus_enabled" name="uniplus_enabled" value="on" {% if uniplus_enabled %}checked{% endif %}>
+                    <label for="uniplus_enabled">Ativar UniPlus neste agente</label>
+                </div>
+                <div class="form-group check-row">
+                    <input type="checkbox" id="uniplus_product_sync_poll" name="uniplus_product_sync_poll" value="on" {% if uniplus_product_sync_poll %}checked{% endif %}>
+                    <label for="uniplus_product_sync_poll">Atualizar preço e nome a cada 30s</label>
+                </div>
+                <p class="hint">Deixe desligado com o Unico aberto. Use Sync na tela Produtos quando precisar.</p>
+                <div class="form-group" id="uniplus-sync-ids">
+                    <button type="button" class="btn-secondary" id="btn-sync-product-ids">Sincronizar ids internos</button>
+                    <p class="sync-status" id="uniplus-sync-ids-result" role="status"></p>
+                    <p class="hint">Consulta o Uniplus já salvo e grava o id da tabela produto, pelo código visível. O pedido de mesa no Servidor PDV usa esse id. Não é o id do cardápio.</p>
+                </div>
+                <div class="form-group">
+                    <label for="uniplus_launch_mode">Lançamento de mesa</label>
+                    <select id="uniplus_launch_mode" name="uniplus_launch_mode">
+                        <option value="postgres" {% if not yoda_on %}selected{% endif %}>Postgres (padrão)</option>
+                        <option value="yoda" {% if yoda_on %}selected{% endif %}>Yoda (servidor HTTP)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="uniplus-http" class="section-card {% if not yoda_on %}is-hidden{% endif %}" data-uniplus-block="http">
+                <h3 class="section-title">Servidor HTTP</h3>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="uniplus_http_server">Servidor</label>
+                        <select id="uniplus_http_server" name="uniplus_http_server">
+                            <option value="yoda" {% if not pdv_http %}selected{% endif %}>Yoda (porta 8443)</option>
+                            <option value="servidor_pdv" {% if pdv_http %}selected{% endif %}>Servidor PDV (porta 1099)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="uniplus_yoda_base_url" id="uniplus-url-label">URL</label>
+                        <input type="text" id="uniplus_yoda_base_url" name="uniplus_yoda_base_url"
+                               value="{{ uniplus_yoda_base_url or 'https://127.0.0.1:8443' }}"
+                               placeholder="https://127.0.0.1:8443"
+                               autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label for="uniplus_yoda_id_filial">Id da filial</label>
+                        <input type="number" id="uniplus_yoda_id_filial" name="uniplus_yoda_id_filial"
+                               value="{{ uniplus_yoda_id_filial }}"
+                               min="1"
+                               placeholder="1"
+                               autocomplete="off">
+                    </div>
+                </div>
+                <div id="uniplus-yoda-auth" class="subgroup {% if not yoda_on or pdv_http %}is-hidden{% endif %}" data-uniplus-block="yoda-auth">
+                    <h3 class="section-title">Autenticação Yoda</h3>
+                    <div class="grid-2">
+                        <div class="form-group">
+                            <label for="uniplus_yoda_codigo_filial">Código da filial</label>
+                            <input type="text" id="uniplus_yoda_codigo_filial" name="uniplus_yoda_codigo_filial"
+                                   value="{{ uniplus_yoda_codigo_filial }}"
+                                   maxlength="4"
+                                   placeholder="1"
+                                   autocomplete="off">
+                            <p class="hint">Até 4 caracteres.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="uniplus_yoda_client_id">Cliente OAuth</label>
+                            <input type="text" id="uniplus_yoda_client_id" name="uniplus_yoda_client_id"
+                                   value="{{ uniplus_yoda_client_id }}"
+                                   placeholder="uniplus"
+                                   autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label for="uniplus_yoda_client_secret">Senha do cliente</label>
+                            <input type="password" id="uniplus_yoda_client_secret" name="uniplus_yoda_client_secret"
+                                   value=""
+                                   placeholder="{% if uniplus_yoda_secret_set %}•••••• (deixe em branco para manter){% else %}em branco usa o cliente local do Yoda{% endif %}"
+                                   autocomplete="new-password">
+                        </div>
+                    </div>
+                </div>
+                <p class="note" id="uniplus-http-note" {% if not yoda_on %}hidden{% endif %}>
+                    {% if pdv_http %}
+                    Listagem e inserção de mesa vão para https://127.0.0.1:1099.
+                    {% else %}
+                    Mesas abertas e o consumo saem desta URL.
+                    {% endif %}
+                </p>
+            </div>
+
+            <p class="note" id="uniplus-postgres-note">
+                {% if yoda_on and pdv_http %}
+                Cardápio, delivery e edição continuam sem contrato HTTP e não abrem o Postgres neste modo.
+                {% elif yoda_on %}
+                Cardápio, delivery e edição ainda usam este banco. Abra Postgres para conferir a conexão.
+                {% else %}
+                Cardápio, delivery e edição usam este banco.
+                {% endif %}
+            </p>
+            <details id="uniplus-postgres" class="section-card fold {% if yoda_on and not pdv_http %}is-secondary{% endif %}" {% if not (yoda_on and not pdv_http) %}open{% endif %}>
+                <summary>Postgres</summary>
+                <div class="fold-body">
+                    <p class="field-legend">Conexão</p>
+                    <div class="grid-2">
+                        <div class="form-group">
+                            <label for="uniplus_host">Host</label>
+                            <input type="text" id="uniplus_host" name="uniplus_host"
+                                   value="{{ uniplus_host }}"
+                                   placeholder="192.168.1.126"
+                                   autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label for="uniplus_port">Porta</label>
+                            <input type="number" id="uniplus_port" name="uniplus_port"
+                                   value="{{ uniplus_port or 5432 }}"
+                                   placeholder="5432" min="1" max="65535">
+                        </div>
+                        <div class="form-group">
+                            <label for="uniplus_user">Usuário</label>
+                            <input type="text" id="uniplus_user" name="uniplus_user"
+                                   value="{{ uniplus_user }}"
+                                   placeholder="compuchat"
+                                   autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label for="uniplus_password">Senha</label>
+                            <input type="password" id="uniplus_password" name="uniplus_password"
+                                   value=""
+                                   placeholder="{% if uniplus_password_set %}•••••• (deixe em branco para manter){% else %}senha{% endif %}"
+                                   autocomplete="new-password">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="uniplus_database">Banco</label>
+                        <input type="text" id="uniplus_database" name="uniplus_database"
+                               value="{{ uniplus_database or 'unico' }}"
+                               placeholder="unico"
+                               autocomplete="off">
+                        <p class="hint">Senha em branco mantém a gravada. No Unico o banco padrão é <strong>unico</strong>.</p>
+                    </div>
+                    <p class="field-legend">Tabelas</p>
+                    <p class="hint" style="margin-top:-0.2rem;">Padrões: produto.codigo, produto.id, produto.nome, produto.preco, contamesa, contamesaitem, tipo de pedido 2.</p>
+                    <div class="grid-2">
+                        <div class="form-group">
+                            <label>Tabela produto</label>
+                            <input type="text" name="uniplus_produto_table" value="{{ uniplus_produto_table }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Coluna código</label>
+                            <input type="text" name="uniplus_produto_codigo_column" value="{{ uniplus_produto_codigo_column }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Coluna id</label>
+                            <input type="text" name="uniplus_produto_id_column" value="{{ uniplus_produto_id_column }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Coluna nome</label>
+                            <input type="text" name="uniplus_produto_nome_column" value="{{ uniplus_produto_nome_column }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Coluna preço</label>
+                            <input type="text" name="uniplus_produto_preco_column" value="{{ uniplus_produto_preco_column }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Tabela contamesa</label>
+                            <input type="text" name="uniplus_contamesa_table" value="{{ uniplus_contamesa_table }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Tabela contamesaitem</label>
+                            <input type="text" name="uniplus_contamesaitem_table" value="{{ uniplus_contamesaitem_table }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Tipo de pedido da mesa</label>
+                            <input type="text" name="uniplus_mesa_tipopedido" value="{{ uniplus_mesa_tipopedido }}">
+                        </div>
+                    </div>
+                </div>
+            </details>
+        </div>
+    </div>
+
+    <div class="tab-panel" id="tab-pos">
+        <div class="section-card">
+            <h3 style="margin-bottom: 0.4rem;">App POS (tablet / garçom)</h3>
+            <p class="hint" style="margin-bottom: 0.85rem;">
+                O tablet baixa o catálogo em <code>GET /pos/sync</code> e envia pedidos em <code>POST /pos/orders</code>.
+                Token vazio = sem autenticação (só use em LAN confiável).
+            </p>
+            <div class="form-group">
+                <label for="pos_api_token">Token do POS (<code>X-Pos-Token</code>)</label>
+                <input type="text" id="pos_api_token" name="pos_api_token" value="{{ pos_api_token }}" placeholder="opcional">
+            </div>
+            <div class="form-group">
+                <label for="pos_taxa_servico">Taxa de serviço (%)</label>
+                <input type="number" id="pos_taxa_servico" name="pos_taxa_servico" min="0" max="100" step="0.01" value="{{ pos_taxa_servico or '0' }}">
+                <p class="hint">Percentual somado na conferência das mesas abertas. 0 não acrescenta taxa. Não grava a taxa no Uniplus.</p>
+            </div>
+            <p class="hint">Pedido de telefone e palavra-chave no POS estão desligados neste agent (a validação estava causando problemas). Ocupação segue só com o nome.</p>
+            <p class="hint">Versão do catálogo local: <strong>{{ pos_catalog_version or 0 }}</strong>
+                {% if pos_last_sync_error %}<br>Último erro: {{ pos_last_sync_error }}{% endif %}
+            </p>
+        </div>
+        <div class="section-card">
+            <h3 style="margin-bottom: 0.4rem;">Imagens do catálogo</h3>
+            <p class="hint">
+                {{ pos_images|length }} no índice
+                · {{ pos_images_ok }} no disco
+                {% if pos_images_missing %}· {{ pos_images_missing }} faltando{% endif %}
+            </p>
+            {% if pos_images %}
+            <div class="pos-images-grid" id="pos-images-grid">
+                {% for img in pos_images %}
+                <figure class="pos-image-card">
+                    {% if img.exists %}
+                    <img src="{{ url_for('pos_media_preview', image_id=img.id) }}" alt="{{ img.products[0] if img.products else img.id }}">
+                    {% else %}
+                    <div class="pos-image-missing">Arquivo ausente</div>
+                    {% endif %}
+                    <figcaption>
+                        {% if img.products %}
+                        {{ img.products[:2]|join(', ') }}
+                        {% if img.products|length > 2 %}<span class="muted"> +{{ img.products|length - 2 }}</span>{% endif %}
+                        {% else %}
+                        <span class="muted">Sem produto</span>
+                        {% endif %}
+                    </figcaption>
+                </figure>
+                {% endfor %}
+            </div>
+            <nav class="pager" id="images-pager" hidden>
+                <button type="button" class="btn btn-ghost" data-pager-prev>Anterior</button>
+                <span class="pager-label" data-pager-label></span>
+                <button type="button" class="btn btn-ghost" data-pager-next>Próxima</button>
+            </nav>
+            {% else %}
+            <p class="hint">Nenhuma imagem ainda. Sincronize o catálogo ou force o download.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="tab-panel" id="tab-opcoes">
+        <div class="section-card">
+            <h3 style="margin-bottom: 0.65rem;">Comportamento</h3>
+            <div class="form-group check-row">
+                <input type="checkbox" id="restart_service_on_save" name="restart_service_on_save" value="1" {% if restart_service_on_save %}checked{% endif %}>
+                <label for="restart_service_on_save">Reiniciar serviço ao salvar</label>
+            </div>
+            <p class="hint">Quando marcado, ao salvar a configuração o agente (WebSocket) reinicia para aplicar as alterações.</p>
+        </div>
+    </div>
+
+    <div class="sticky-actions">
+        <button type="submit">Salvar configuração</button>
+    </div>
+</form>
+<form method="post" action="/pos/catalog-sync" style="margin-top: 0.75rem; display: inline-block; margin-right: 0.5rem;">
+    <button type="submit" class="btn-ghost">Sincronizar catálogo POS agora</button>
+</form>
+<form method="post" action="/pos/images-sync" style="margin-top: 0.75rem; display: inline-block;">
+    <button type="submit" class="btn-ghost">Forçar download das imagens</button>
+</form>
+
+<template id="printer-block-tpl">
+    <div class="printer-block printer-card" data-index="">
+        <div class="printer-card-header">
+            <h3 class="printer-card-title">Impressora <span class="printer-num"></span></h3>
+            <span class="printer-card-badge">Dispositivo</span>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Device ID</label>
+                <input type="text" name="printer_X_device_id" placeholder="ex: cozinha-01">
+            </div>
+            <div class="form-group">
+                <label>Token (Bearer)</label>
+                <input type="password" name="printer_X_token" placeholder="Token do dispositivo">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Nome (opcional)</label>
+            <input type="text" name="printer_X_name" placeholder="ex: Cozinha">
+        </div>
+        <p class="field-legend">Conexão</p>
+        <div class="form-group">
+            <label>Tipo de Conexão</label>
+            <select name="printer_X_connection_type" class="connection-type-select" data-index="X">
+                <option value="network" selected>Rede (IP/Porta)</option>
+                <option value="local">Local (Windows)</option>
+            </select>
+        </div>
+        <div class="network-config" id="network-config-X">
+            <div class="grid-2">
+                <div class="form-group">
+                    <label>IP da impressora</label>
+                    <input type="text" name="printer_X_printer_ip" value="192.168.1.100">
+                </div>
+                <div class="form-group">
+                    <label>Porta</label>
+                    <input type="number" name="printer_X_printer_port" value="9100">
+                </div>
+            </div>
+        </div>
+        <div class="local-config" id="local-config-X" style="display: none;">
+            <div class="form-group">
+                <label>Impressora Local</label>
+                <select name="printer_X_printer_name_local" id="printer-name-local-X">
+                    <option value="">Carregando impressoras...</option>
+                </select>
+                <button type="button" class="btn-refresh-printers btn-ghost" data-index="X" style="margin-top: 0.5rem;">Atualizar lista</button>
+            </div>
+        </div>
+        <div class="network-only-config" id="network-only-config-X">
+            <div class="form-group">
+                <label>Tipo</label>
+                <select name="printer_X_printer_type">
+                    <option value="raw" selected>RAW (porta 9100)</option>
+                    <option value="ipp">IPP</option>
+                </select>
+            </div>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Largura do papel (caracteres)</label>
+                <input type="number" name="printer_X_paper_width" value="32" min="24" max="48">
+            </div>
+            <div class="form-group">
+                <label>Codificação</label>
+                <select name="printer_X_printer_encoding">
+                    <option value="cp850" selected>CP850</option>
+                    <option value="cp860">CP860</option>
+                    <option value="cp1252">CP1252</option>
+                    <option value="utf8">UTF-8</option>
+                </select>
+            </div>
+        </div>
+        <p class="field-legend">Cupom</p>
+        <p class="hint" style="margin-bottom: 0.6rem;">Automático segue o tamanho do pedido. Os outros tamanhos fixam o cupom.</p>
+        <div class="form-group">
+            <label>Cardápio e delivery</label>
+            <select name="printer_X_font_mode">
+                <option value="auto" selected>Automático (tamanho do pedido)</option>
+                <option value="1">Normal</option>
+                <option value="2">Grande</option>
+                <option value="3">Extra grande</option>
+            </select>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Consumo no local (POS)</label>
+                <select name="printer_X_font_mode_dine_in">
+                    <option value="auto" selected>Automático</option>
+                    <option value="1">Normal</option>
+                    <option value="2">Grande</option>
+                    <option value="3">Extra grande</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Para levar (POS)</label>
+                <select name="printer_X_font_mode_takeaway">
+                    <option value="auto" selected>Automático</option>
+                    <option value="1">Normal</option>
+                    <option value="2">Grande</option>
+                    <option value="3">Extra grande</option>
+                </select>
+            </div>
+        </div>
+        <div class="printer-actions">
+            <button type="button" class="btn-test-printer btn-secondary" data-index="X">Testar impressora</button>
+            <button type="button" class="btn-cancel-queue btn-ghost" data-index="X">Marcar fila como impressa</button>
+            <button type="button" class="btn-remove btn-danger" aria-label="Remover impressora">Remover</button>
+        </div>
+    </div>
+</template>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    // Tabs
+    var tabButtons = document.querySelectorAll('.tab-btn');
+    var tabPanels = document.querySelectorAll('.tab-panel');
+    function activateTab(name) {
+        tabButtons.forEach(function(btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-tab') === name);
+        });
+        tabPanels.forEach(function(panel) {
+            panel.classList.toggle('active', panel.id === 'tab-' + name);
+        });
+        try { history.replaceState(null, '', '#' + name); } catch (e) {}
+    }
+    tabButtons.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            activateTab(btn.getAttribute('data-tab'));
+        });
+    });
+    var hash = (location.hash || '').replace('#', '');
+    if (hash && document.getElementById('tab-' + hash)) {
+        activateTab(hash);
+    }
+
+    var container = document.getElementById('printers-container');
+    var tpl = document.getElementById('printer-block-tpl');
+    var addBtn = document.getElementById('add-printer');
+    var printerPager = null;
+
+    function nextIndex() {
+        var blocks = container.querySelectorAll('.printer-block');
+        var max = -1;
+        blocks.forEach(function(b) {
+            var idx = parseInt(b.getAttribute('data-index'), 10);
+            if (!isNaN(idx) && idx > max) max = idx;
+        });
+        return max + 1;
+    }
+
+    function setBlockIndex(block, idx) {
+        block.setAttribute('data-index', idx);
+        var numEl = block.querySelector('.printer-num');
+        if (numEl) numEl.textContent = idx + 1;
+        var title = block.querySelector('.printer-card-title');
+        if (title && !numEl) title.textContent = 'Impressora ' + (idx + 1);
+        block.querySelectorAll('[name]').forEach(function(input) {
+            var n = input.getAttribute('name');
+            if (n && n.indexOf('printer_') === 0) {
+                var rest = n.replace(/^printer_(X|\d+)_/, '');
+                input.setAttribute('name', 'printer_' + idx + '_' + rest);
+            }
+        });
+        block.querySelectorAll('[id]').forEach(function(el) {
+            var id = el.getAttribute('id');
+            if (!id) return;
+            if (id.indexOf('network-config-') >= 0) el.setAttribute('id', 'network-config-' + idx);
+            else if (id.indexOf('local-config-') >= 0) el.setAttribute('id', 'local-config-' + idx);
+            else if (id.indexOf('network-only-config-') >= 0) el.setAttribute('id', 'network-only-config-' + idx);
+            else if (id.indexOf('printer-name-local-') >= 0) el.setAttribute('id', 'printer-name-local-' + idx);
+        });
+        block.querySelectorAll('[data-index]').forEach(function(el) {
+            if (el.classList.contains('connection-type-select') || el.classList.contains('btn-refresh-printers') || el.classList.contains('btn-test-printer') || el.classList.contains('btn-cancel-queue')) {
+                el.setAttribute('data-index', idx);
+            }
+        });
+    }
+
+    addBtn.addEventListener('click', function() {
+        var idx = nextIndex();
+        var clone = tpl.content.cloneNode(true);
+        var block = clone.querySelector('.printer-block');
+        setBlockIndex(block, idx);
+        if (block.querySelector('.printer-num')) block.querySelector('.printer-num').textContent = idx + 1;
+        container.appendChild(clone);
+        bindRemove(block);
+        bindConnectionType(block);
+        bindTestPrinter(block);
+        bindCancelQueue(block);
+        if (printerPager) {
+            printerPager.refresh();
+            printerPager.lastPage();
+        }
+        activateTab('impressoras');
+    });
+
+    function bindRemove(block) {
+        block.querySelector('.btn-remove').addEventListener('click', function() {
+            block.remove();
+            renumberBlocks();
+            if (printerPager) printerPager.refresh();
+        });
+    }
+
+    function printerPayload(block, index) {
+        var prefix = 'printer_' + index + '_';
+        var connectionType = block.querySelector('[name="' + prefix + 'connection_type"]').value;
+        var fontMode = block.querySelector('[name="' + prefix + 'font_mode"]');
+        var fontDine = block.querySelector('[name="' + prefix + 'font_mode_dine_in"]');
+        var fontTake = block.querySelector('[name="' + prefix + 'font_mode_takeaway"]');
+        var payload = {
+            connection_type: connectionType,
+            paper_width: block.querySelector('[name="' + prefix + 'paper_width"]').value || '32',
+            printer_encoding: block.querySelector('[name="' + prefix + 'printer_encoding"]').value || 'cp850',
+            font_mode: fontMode ? fontMode.value : 'auto',
+            font_mode_dine_in: fontDine ? fontDine.value : 'auto',
+            font_mode_takeaway: fontTake ? fontTake.value : 'auto',
+        };
+        var deviceInput = block.querySelector('[name="' + prefix + 'device_id"]');
+        if (deviceInput && deviceInput.value) payload.device_id = deviceInput.value.trim();
+        if (connectionType === 'local') {
+            var printerNameLocal = block.querySelector('[name="' + prefix + 'printer_name_local"]').value;
+            if (!printerNameLocal) { alert('Selecione uma impressora local primeiro'); return null; }
+            payload.printer_name_local = printerNameLocal;
+        } else {
+            var printerIp = block.querySelector('[name="' + prefix + 'printer_ip"]').value;
+            var printerPort = block.querySelector('[name="' + prefix + 'printer_port"]').value || '9100';
+            var printerType = block.querySelector('[name="' + prefix + 'printer_type"]').value || 'raw';
+            if (!printerIp) { alert('Informe o IP da impressora primeiro'); return null; }
+            payload.printer_ip = printerIp;
+            payload.printer_port = parseInt(printerPort);
+            payload.printer_type = printerType;
+        }
+        return payload;
+    }
+
+    function bindTestPrinter(block) {
+        var btn = block.querySelector('.btn-test-printer');
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+            var payload = printerPayload(block, btn.getAttribute('data-index'));
+            if (!payload) return;
+            btn.disabled = true;
+            btn.textContent = 'Testando...';
+            fetch('/api/test-printer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) alert('✓ ' + data.message);
+                else alert('✗ Erro: ' + (data.error || 'Falha ao testar impressora'));
+            })
+            .catch(function(error) { alert('✗ Erro ao conectar: ' + error.message); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = 'Testar impressora';
+            });
+        });
+    }
+
+    function bindCancelQueue(block) {
+        var btn = block.querySelector('.btn-cancel-queue');
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+            if (!confirm('Marcar a fila desta impressora como impressa? Os cupons pendentes não serão reenviados. O que já estiver no papel pode continuar saindo.')) return;
+            var payload = printerPayload(block, btn.getAttribute('data-index'));
+            if (!payload) return;
+            btn.disabled = true;
+            btn.textContent = 'Marcando...';
+            fetch('/api/cancel-print-queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(function(r) { return r.json().then(function(data) { return { http: r.status, data: data }; }); })
+            .then(function(res) {
+                var data = res.data || {};
+                var msg = data.message || data.error || 'Falha ao cancelar a fila';
+                if (data.success) alert('✓ ' + msg);
+                else alert('✗ ' + msg);
+            })
+            .catch(function(error) { alert('✗ Erro ao conectar: ' + error.message); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = 'Marcar fila como impressa';
+            });
+        });
+    }
+
+    function renumberBlocks() {
+        container.querySelectorAll('.printer-block').forEach(function(block, i) {
+            setBlockIndex(block, i);
+            var title = block.querySelector('.printer-card-title');
+            if (title) title.innerHTML = 'Impressora ' + (i + 1);
+        });
+    }
+
+    function loadLocalPrinters(selectId, index) {
+        var select = document.getElementById(selectId);
+        if (!select) return;
+        var savedValue = select.getAttribute('data-saved-value') || '';
+        select.innerHTML = '<option value="">Carregando...</option>';
+        fetch('/api/local-printers')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    select.innerHTML = '<option value="">' + data.error + '</option>';
+                    return;
+                }
+                select.innerHTML = '<option value="">Selecione uma impressora</option>';
+                if (data.printers && data.printers.length > 0) {
+                    data.printers.forEach(function(printer) {
+                        var option = document.createElement('option');
+                        option.value = printer.name;
+                        option.textContent = printer.name;
+                        if (printer.name === savedValue) option.selected = true;
+                        select.appendChild(option);
+                    });
+                } else {
+                    select.innerHTML = '<option value="">Nenhuma impressora encontrada</option>';
+                }
+            })
+            .catch(function(error) {
+                select.innerHTML = '<option value="">Erro ao conectar: ' + error.message + '</option>';
+            });
+    }
+
+    function toggleConnectionType(select, index) {
+        var connectionType = select.value;
+        var networkConfig = document.getElementById('network-config-' + index);
+        var localConfig = document.getElementById('local-config-' + index);
+        var networkOnlyConfig = document.getElementById('network-only-config-' + index);
+        var printerNameLocal = document.getElementById('printer-name-local-' + index);
+        if (connectionType === 'local') {
+            if (networkConfig) networkConfig.style.display = 'none';
+            if (networkOnlyConfig) networkOnlyConfig.style.display = 'none';
+            if (localConfig) localConfig.style.display = 'block';
+            if (printerNameLocal && (printerNameLocal.options.length <= 1 || printerNameLocal.innerHTML.indexOf('Carregando') >= 0)) {
+                loadLocalPrinters('printer-name-local-' + index, index);
+            }
+        } else {
+            if (networkConfig) networkConfig.style.display = 'block';
+            if (networkOnlyConfig) networkOnlyConfig.style.display = 'block';
+            if (localConfig) localConfig.style.display = 'none';
+        }
+    }
+
+    function bindConnectionType(block) {
+        var select = block.querySelector('.connection-type-select');
+        if (select) {
+            var index = block.getAttribute('data-index');
+            select.addEventListener('change', function() { toggleConnectionType(this, index); });
+            toggleConnectionType(select, index);
+        }
+        var refreshBtn = block.querySelector('.btn-refresh-printers');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', function() {
+                var idx = this.getAttribute('data-index');
+                loadLocalPrinters('printer-name-local-' + idx, idx);
+            });
+        }
+    }
+
+    container.querySelectorAll('.printer-block').forEach(function(block) {
+        bindRemove(block);
+        bindTestPrinter(block);
+        bindCancelQueue(block);
+        bindConnectionType(block);
+    });
+    if (window.setupListPager) {
+        printerPager = setupListPager('#printers-container .printer-block', '#printers-pager', 2);
+        setupListPager('#pos-images-grid .pos-image-card', '#images-pager', 8);
+    }
+
+    var YODA_URL = 'https://127.0.0.1:8443';
+    var PDV_URL = 'https://127.0.0.1:1099';
+    var lastUniplusKey = null;
+
+    function normUrl(value) {
+        return String(value || '').trim().replace(/\/+$/, '');
+    }
+
+    function selectedErp() {
+        var selected = document.querySelector('input[name="erp_target"]:checked');
+        return selected ? selected.value : 'uniplus';
+    }
+
+    function applyDefaultHttpUrl() {
+        var input = document.getElementById('uniplus_yoda_base_url');
+        var server = document.getElementById('uniplus_http_server');
+        if (!input || !server) return;
+        var current = normUrl(input.value);
+        if (server.value === 'servidor_pdv' && (!current || current === YODA_URL)) {
+            input.value = PDV_URL;
+        } else if (server.value === 'yoda' && (!current || current === PDV_URL)) {
+            input.value = YODA_URL;
+        }
+    }
+
+    function syncUniplusBlocks() {
+        var launch = document.getElementById('uniplus_launch_mode');
+        var serverEl = document.getElementById('uniplus_http_server');
+        var mode = launch ? launch.value : 'postgres';
+        var server = serverEl ? serverEl.value : 'yoda';
+        var yoda = mode === 'yoda';
+        var pdv = yoda && server === 'servidor_pdv';
+        var httpBlock = document.getElementById('uniplus-http');
+        var authBlock = document.getElementById('uniplus-yoda-auth');
+        var httpNote = document.getElementById('uniplus-http-note');
+        var pgNote = document.getElementById('uniplus-postgres-note');
+        var fold = document.getElementById('uniplus-postgres');
+        var urlLabel = document.getElementById('uniplus-url-label');
+        var urlInput = document.getElementById('uniplus_yoda_base_url');
+        if (httpBlock) httpBlock.classList.toggle('is-hidden', !yoda);
+        if (authBlock) authBlock.classList.toggle('is-hidden', !yoda || pdv);
+        if (httpNote) {
+            httpNote.hidden = !yoda;
+            httpNote.textContent = pdv
+                ? 'Listagem e inserção de mesa vão para https://127.0.0.1:1099.'
+                : 'Mesas abertas e o consumo saem desta URL.';
+        }
+        if (pgNote) {
+            if (pdv) pgNote.textContent = 'Cardápio, delivery e edição continuam sem contrato HTTP e não abrem o Postgres neste modo.';
+            else if (yoda) pgNote.textContent = 'Cardápio, delivery e edição ainda usam este banco. Abra Postgres para conferir a conexão.';
+            else pgNote.textContent = 'Cardápio, delivery e edição usam este banco.';
+        }
+        if (urlLabel) urlLabel.textContent = pdv ? 'URL do Servidor PDV' : 'URL do Yoda';
+        if (urlInput) urlInput.placeholder = pdv ? PDV_URL : YODA_URL;
+        if (fold) {
+            var secondary = yoda && !pdv;
+            fold.classList.toggle('is-secondary', secondary);
+            var key = mode + ':' + server;
+            if (key !== lastUniplusKey) {
+                if (secondary) fold.removeAttribute('open');
+                else fold.setAttribute('open', '');
+                lastUniplusKey = key;
+            }
+        }
+    }
+
+    function syncErpPanels() {
+        var target = selectedErp();
+        document.querySelectorAll('[data-erp-panel]').forEach(function(el) {
+            el.classList.toggle('is-hidden', el.getAttribute('data-erp-panel') !== target);
+        });
+        syncUniplusBlocks();
+    }
+
+    document.querySelectorAll('input[name="erp_target"]').forEach(function(el) {
+        el.addEventListener('change', syncErpPanels);
+    });
+    var launchMode = document.getElementById('uniplus_launch_mode');
+    var httpServer = document.getElementById('uniplus_http_server');
+    var syncIdsBtn = document.getElementById('btn-sync-product-ids');
+    if (syncIdsBtn) {
+        syncIdsBtn.addEventListener('click', function() {
+            var resultEl = document.getElementById('uniplus-sync-ids-result');
+            var label = 'Sincronizar ids internos';
+            syncIdsBtn.disabled = true;
+            syncIdsBtn.textContent = 'Sincronizando...';
+            if (resultEl) {
+                resultEl.className = 'sync-status';
+                resultEl.textContent = 'Consultando o Uniplus...';
+            }
+            fetch('/api/uniplus/sync-product-ids', { method: 'POST' })
+                .then(function(response) {
+                    return response.json().then(function(data) {
+                        return { ok: response.ok, data: data || {} };
+                    });
+                })
+                .then(function(res) {
+                    var data = res.data;
+                    if (!res.ok || data.ok === false) {
+                        if (resultEl) {
+                            resultEl.className = 'sync-status is-err';
+                            resultEl.textContent = 'Erro: ' + (data.error || 'falha ao sincronizar os ids');
+                        }
+                        return;
+                    }
+                    if (resultEl) {
+                        resultEl.className = 'sync-status is-ok';
+                        resultEl.textContent = data.message || (
+                            data.com_id + ' produtos receberam o id interno. ' +
+                            data.sem_id + ' ficaram sem id.'
+                        );
+                    }
+                })
+                .catch(function(error) {
+                    if (resultEl) {
+                        resultEl.className = 'sync-status is-err';
+                        resultEl.textContent = 'Erro ao conectar: ' + error.message;
+                    }
+                })
+                .finally(function() {
+                    syncIdsBtn.disabled = false;
+                    syncIdsBtn.textContent = label;
+                });
+        });
+    }
+    if (launchMode) launchMode.addEventListener('change', syncUniplusBlocks);
+    if (httpServer) httpServer.addEventListener('change', function() {
+        applyDefaultHttpUrl();
+        syncUniplusBlocks();
+    });
+    syncErpPanels();
+})();
+</script>
+{% endblock %}

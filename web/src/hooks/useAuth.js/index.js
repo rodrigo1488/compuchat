@@ -1,0 +1,331 @@
+import { useState, useEffect, useContext } from "react";
+import { useHistory } from "react-router-dom";
+import { has, isArray } from "lodash";
+
+import { toast } from "react-toastify";
+
+import { i18n } from "../../translate/i18n";
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
+import { saveRememberedCredential } from "../../helpers/loginRememberedCredentials";
+import { SocketContext } from "../../context/Socket/SocketContext";
+import moment from "moment";
+const loadTranslationConfig = async (fallbackLanguage = "pt") => {
+  try {
+    const { data: langData } = await api.get("/translation/company-language");
+    return {
+      language: langData.language || fallbackLanguage,
+      enabled: Boolean(langData.enabled)
+    };
+  } catch (err) {
+    console.error("Erro ao buscar configuração de tradução:", err);
+    return { language: fallbackLanguage, enabled: false };
+  }
+};
+
+const useAuth = () => {
+  const history = useHistory();
+  const [isAuth, setIsAuth] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState({});
+  const [companyLanguage, setCompanyLanguage] = useState("pt");
+  const [messageTranslationEnabled, setMessageTranslationEnabled] = useState(false);
+
+  api.interceptors.request.use(
+    (config) => {
+      const token = localStorage.getItem("token");
+      if (token) {
+        config.headers["Authorization"] = `Bearer ${JSON.parse(token)}`;
+        setIsAuth(true);
+      }
+      return config;
+    },
+    (error) => {
+      Promise.reject(error);
+    }
+  );
+
+  let isRefreshing = false;
+  let failedRequestsQueue = [];
+
+  api.interceptors.response.use(
+    (response) => {
+      return response;
+    },
+    async (error) => {
+      const originalRequest = error.config;
+
+      if (error?.response?.status === 403 && !originalRequest._retry) {
+        if (isRefreshing) {
+          return new Promise((resolve, reject) => {
+            failedRequestsQueue.push({ resolve, reject });
+          })
+            .then((token) => {
+              originalRequest.headers.Authorization = `Bearer ${token}`;
+              return api(originalRequest);
+            })
+            .catch((err) => {
+              return Promise.reject(err);
+            });
+        }
+
+        originalRequest._retry = true;
+        isRefreshing = true;
+
+        try {
+          const { data } = await api.post("/auth/refresh_token");
+
+          if (data) {
+            localStorage.setItem("token", JSON.stringify(data.token));
+            api.defaults.headers.Authorization = `Bearer ${data.token}`;
+
+            failedRequestsQueue.forEach((request) => {
+              request.resolve(data.token);
+            });
+            failedRequestsQueue = [];
+          }
+
+          return api(originalRequest);
+        } catch (refreshError) {
+          failedRequestsQueue.forEach((request) => {
+            request.reject(refreshError);
+          });
+          failedRequestsQueue = [];
+
+          localStorage.removeItem("token");
+          localStorage.removeItem("companyId");
+          localStorage.removeItem("ai_chat_messages");
+          api.defaults.headers.Authorization = undefined;
+          setIsAuth(false);
+
+          return Promise.reject(refreshError);
+        } finally {
+          isRefreshing = false;
+        }
+      }
+
+      if (
+        error?.response?.status === 401 ||
+        (error?.response?.status === 403 && originalRequest._retry)
+      ) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("companyId");
+        localStorage.removeItem("ai_chat_messages");
+        api.defaults.headers.Authorization = undefined;
+        setIsAuth(false);
+      }
+
+      return Promise.reject(error);
+    }
+  );
+
+  const socketManager = useContext(SocketContext);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    (async () => {
+      if (token) {
+        try {
+          const { data } = await api.post("/auth/refresh_token");
+          api.defaults.headers.Authorization = `Bearer ${data.token}`;
+          setIsAuth(true);
+          setUser(data.user);
+          // Manter dueDate alinhado para Route.js (fallback se company vier sem dueDate)
+          if (data.user?.company?.dueDate) {
+            const v = moment(data.user.company.dueDate).format("DD/MM/YYYY");
+            localStorage.setItem("companyDueDate", v);
+          }
+
+          // Carregar idioma da empresa e flag de tradução
+          if (data.user?.company?.language) {
+            setCompanyLanguage(data.user.company.language);
+          }
+          const translationConfig = await loadTranslationConfig(
+            data.user?.company?.language || "pt"
+          );
+          if (!data.user?.company?.language) {
+            setCompanyLanguage(translationConfig.language);
+          }
+          setMessageTranslationEnabled(translationConfig.enabled);
+        } catch (err) {
+          toastError(err);
+        }
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    const companyId = localStorage.getItem("companyId");
+    if (companyId) {
+      const socket = socketManager.getSocket(companyId);
+
+      socket.on(`company-${companyId}-user`, (data) => {
+        if (data.action === "update" && data.user.id === user.id) {
+          setUser(data.user);
+        }
+      });
+
+      return () => {
+        socket.disconnect();
+      };
+    }
+  }, [socketManager, user]);
+
+  const handleLogin = async (userData) => {
+    setLoading(true);
+
+    const rememberMe = Boolean(userData.rememberMe);
+    const loginPayload = {
+      email: userData.email,
+      password: userData.password
+    };
+
+    try {
+      const { data } = await api.post("/auth/login", loginPayload);
+      const {
+        user: { companyId, id, company },
+      } = data;
+
+      if (has(company, "settings") && isArray(company.settings)) {
+        const setting = company.settings.find(
+          (s) => s.key === "campaignsEnabled"
+        );
+        if (setting && setting.value === "true") {
+          localStorage.setItem("cshow", null); //regra pra exibir campanhas
+        }
+      }
+
+      moment.locale("pt-br");
+      const dueDate = data.user.company.dueDate;
+      const hoje = moment(moment()).format("DD/MM/yyyy");
+      const vencimento = moment(dueDate).format("DD/MM/yyyy");
+
+      var diff = moment(dueDate).diff(moment(moment()).format());
+
+      var before = moment(moment().format()).isBefore(dueDate);
+      var dias = moment.duration(diff).asDays();
+
+      // Permitir login mesmo com assinatura vencida
+      // O sistema de rotas vai redirecionar para a página correta
+      localStorage.setItem("token", JSON.stringify(data.token));
+      localStorage.setItem("companyId", companyId);
+      localStorage.setItem("userId", id);
+      localStorage.setItem("companyDueDate", vencimento);
+      api.defaults.headers.Authorization = `Bearer ${data.token}`;
+      setUser(data.user);
+      setIsAuth(true);
+      
+      // Carregar idioma da empresa e flag de tradução
+      if (data.user?.company?.language) {
+        setCompanyLanguage(data.user.company.language);
+      }
+      const translationConfig = await loadTranslationConfig(
+        data.user?.company?.language || "pt"
+      );
+      if (!data.user?.company?.language) {
+        setCompanyLanguage(translationConfig.language);
+      }
+      setMessageTranslationEnabled(translationConfig.enabled);
+      
+      if (rememberMe && loginPayload.email && loginPayload.password != null) {
+        try {
+          await saveRememberedCredential(loginPayload.email, loginPayload.password);
+        } catch (credErr) {
+          console.error("Não foi possível guardar credenciais lembradas:", credErr);
+        }
+      }
+
+      if (before === true) {
+        toast.success(i18n.t("auth.toasts.success"));
+        if (Math.round(dias) < 5 && Math.round(dias) > 0) {
+          toast.warn(
+            `Sua assinatura vence em ${Math.round(dias)} ${
+              Math.round(dias) === 1 ? "dia" : "dias"
+            } `
+          );
+        }
+        const route = typeof data.user?.defaultRoute === "string" ? data.user.defaultRoute.trim() : "";
+        const allowedRoutes = ["dashboard", "tickets", "cozinha", "entregador", "garcom", "pedidos", "mesas", "forms", "lanchonetes", "pdv"];
+        const path = route && allowedRoutes.includes(route) ? `/${route}` : "/tickets";
+        history.push(path);
+      } else {
+        // Assinatura vencida - redirecionar para página de vencimento
+        toast.warn("Seu período de teste expirou. Renove sua assinatura para continuar.");
+        history.push("/subscription-expired");
+      }
+      setLoading(false);
+
+      //quebra linha
+    } catch (err) {
+      toastError(err);
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setLoading(true);
+
+    try {
+      await api.delete("/auth/logout");
+      setIsAuth(false);
+      
+      // Preservar flags de tour antes de limpar
+      const userId = localStorage.getItem("userId");
+      const tourKeys = [];
+      if (userId) {
+        // Coletar todas as chaves de tour relacionadas a este usuário
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && (key.startsWith(`tourCompleted_${userId}`) || key.startsWith(`tourCompleted_global_${userId}`))) {
+            tourKeys.push({ key, value: localStorage.getItem(key) });
+          }
+        }
+      }
+      
+      setUser({});
+      localStorage.removeItem("token");
+      localStorage.removeItem("companyId");
+      localStorage.removeItem("userId");
+      localStorage.removeItem("cshow");
+      // Limpar histórico de conversas com IA
+      localStorage.removeItem("ai_chat_messages");
+      
+      // Restaurar flags de tour após limpar
+      if (userId && tourKeys.length > 0) {
+        tourKeys.forEach(({ key, value }) => {
+          localStorage.setItem(key, value);
+        });
+      }
+      
+      api.defaults.headers.Authorization = undefined;
+      setLoading(false);
+      history.push("/login");
+    } catch (err) {
+      toastError(err);
+      setLoading(false);
+    }
+  };
+
+  const getCurrentUserInfo = async () => {
+    try {
+      const { data } = await api.get("/auth/me");
+      return data;
+    } catch (err) {
+      toastError(err);
+    }
+  };
+
+  return {
+    isAuth,
+    user,
+    loading,
+    companyLanguage,
+    messageTranslationEnabled,
+    handleLogin,
+    handleLogout,
+    getCurrentUserInfo,
+  };
+};
+
+export default useAuth;

@@ -1,0 +1,389 @@
+import React, { useState, useEffect, useContext, useRef } from "react";
+import { useParams, useHistory } from "react-router-dom";
+
+import { toast } from "react-toastify";
+import clsx from "clsx";
+
+import { Paper, makeStyles, useTheme } from "@material-ui/core";
+
+import ContactDrawer from "../ContactDrawer";
+import MessageInput from "../MessageInputCustom/";
+import TicketHeader from "../TicketHeader";
+import TicketInfo from "../TicketInfo";
+import TicketActionButtons from "../TicketActionButtonsCustom";
+import MessagesList from "../MessagesList";
+import ChatAIModal from "../ChatAIModal";
+import QuickActionsMenu from "../QuickActionsMenu";
+import TaskModal from "../QuickActionsMenu/TaskModal";
+import QuickMessageModal from "../QuickActionsMenu/QuickMessageModal";
+import ScheduleModal from "../QuickActionsMenu/ScheduleModal";
+import api from "../../services/api";
+import { ReplyMessageProvider } from "../../context/ReplyingMessage/ReplyingMessageContext";
+import { AudioPlayerProvider } from "../../context/AudioPlayer/AudioPlayerContext";
+import toastError from "../../errors/toastError";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { TagsDropdown } from "../TagsDropdown";
+import { SocketContext } from "../../context/Socket/SocketContext";
+import { i18n } from "../../translate/i18n";
+import IframeModal from "../IframeModal";
+import SearchMessagesModal from "../SearchMessagesModal";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { canUserViewTicket } from "../../utils/ticketEligibility";
+
+const drawerWidth = 320;
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    display: "flex",
+    height: "100%",
+    position: "relative",
+    overflow: "hidden",
+  },
+
+  mainWrapper: {
+    flex: 1,
+    height: "100%",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderLeft: "0",
+    marginRight: -drawerWidth,
+    transition: theme.transitions.create("margin", {
+      easing: theme.transitions.easing.sharp,
+      duration: theme.transitions.duration.leavingScreen,
+    }),
+  },
+
+  mainWrapperShift: {
+    borderTopRightRadius: 0,
+    borderBottomRightRadius: 0,
+    transition: theme.transitions.create("margin", {
+      easing: theme.transitions.easing.easeOut,
+      duration: theme.transitions.duration.enteringScreen,
+    }),
+    marginRight: 0,
+  },
+}));
+
+const Ticket = () => {
+  const { ticketId } = useParams();
+  const history = useHistory();
+  const classes = useStyles();
+  const theme = useTheme();
+
+  const { user, messageTranslationEnabled } = useContext(AuthContext);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [contact, setContact] = useState({});
+  const [ticket, setTicket] = useState({});
+  const [aiHandlers, setAiHandlers] = useState(null);
+  const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [quickMessageModalOpen, setQuickMessageModalOpen] = useState(false);
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [iframeModalOpen, setIframeModalOpen] = useState(false);
+  const [iframeUrl, setIframeUrl] = useState("");
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
+  const [scrollToMessageId, setScrollToMessageId] = useState(null);
+  const [realTimeTranslationEnabled, setRealTimeTranslationEnabled] = useLocalStorage("realTimeTranslationEnabled", false);
+  const translationActive = messageTranslationEnabled && realTimeTranslationEnabled;
+  const messagesListRef = useRef(null);
+
+  const socketManager = useContext(SocketContext);
+
+  useEffect(() => {
+    // Limpar estado imediatamente ao mudar ticketId para nunca exibir cabeçalho/dados de outro ticket ou empresa
+    setTicket({});
+    setContact({});
+    setLoading(true);
+
+    const delayDebounceFn = setTimeout(() => {
+      const fetchTicket = async () => {
+        if (!ticketId || String(ticketId).trim() === "" || String(ticketId) === "undefined") {
+          setLoading(false);
+          history.push("/tickets");
+          return;
+        }
+        try {
+          const { data } = await api.get("/tickets/u/" + ticketId);
+
+          // Segurança: não exibir dados de outra empresa (mitiga vazamento mesmo em race/cache)
+          const userCompanyId = user?.companyId ?? parseInt(localStorage.getItem("companyId") || "0", 10);
+          if (data.companyId != null && Number(data.companyId) !== Number(userCompanyId)) {
+            toast.error(i18n.t("tickets.toasts.unauthorized"));
+            history.push("/tickets");
+            return;
+          }
+
+          if (!canUserViewTicket(data, user)) {
+            toast.error(i18n.t("tickets.toasts.unauthorized"));
+            history.push("/tickets");
+            return;
+          }
+
+          setContact(data.contact);
+          setTicket(data);
+          setLoading(false);
+        } catch (err) {
+          setLoading(false);
+          toastError(err);
+        }
+      };
+      fetchTicket();
+    }, 200);
+    return () => clearTimeout(delayDebounceFn);
+  }, [ticketId, user, history]);
+
+  useEffect(() => {
+    const companyId = localStorage.getItem("companyId");
+    const socket = socketManager.getSocket(companyId);
+    const userCompanyId = user?.companyId ?? parseInt(companyId || "0", 10);
+
+    const handleReady = () => socket.emit("joinChatBox", `${ticket.id}`);
+    const handleTicket = (data) => {
+      if (data.action === "update" && data.ticket.id === ticket.id) {
+        if (Number(data.ticket.companyId) === Number(userCompanyId)) {
+          setTicket(data.ticket);
+        }
+      }
+
+      if (data.action === "delete" && data.ticketId === ticket.id) {
+        history.push("/tickets");
+      }
+    };
+    const handleContact = (data) => {
+      if (data.action === "update") {
+        setContact((prevState) => {
+          if (prevState.id === data.contact?.id) {
+            return { ...prevState, ...data.contact };
+          }
+          return prevState;
+        });
+      }
+    };
+
+    socket.on("ready", handleReady);
+    socket.on(`company-${companyId}-ticket`, handleTicket);
+    socket.on(`company-${companyId}-contact`, handleContact);
+
+    return () => {
+      socket.off("ready", handleReady);
+      socket.off(`company-${companyId}-ticket`, handleTicket);
+      socket.off(`company-${companyId}-contact`, handleContact);
+    };
+  }, [ticketId, ticket, history, socketManager, user]);
+
+  const handleDrawerOpen = () => {
+    setDrawerOpen(true);
+  };
+
+  const handleDrawerClose = () => {
+    setDrawerOpen(false);
+  };
+
+  const isTicketFromCurrentCompany = () => {
+    const userCompanyId = user?.companyId ?? parseInt(localStorage.getItem("companyId") || "0", 10);
+    return ticket?.companyId != null && Number(ticket.companyId) === Number(userCompanyId);
+  };
+
+  const renderTicketInfo = () => {
+    if (ticket.user !== undefined && isTicketFromCurrentCompany()) {
+      return (
+        <TicketInfo
+          contact={contact}
+          ticket={ticket}
+          onClick={handleDrawerOpen}
+        />
+      );
+    }
+  };
+
+  const handleQuickMessageSend = (message) => {
+    if (ticket.status === "closed") {
+      toast.info(i18n.t("backendErrors.ERR_TICKET_CLOSED_CANNOT_SEND"), {
+        toastId: "ticket-closed-no-send",
+      });
+      return;
+    }
+    // Send message via API (same format as MessageInput)
+    const sendMessage = async () => {
+      try {
+        const messageData = {
+          read: 1,
+          fromMe: true,
+          mediaUrl: "",
+          body: message.trim(),
+          quotedMsg: null,
+          isInternal: false,
+        };
+        await api.post(`/messages/${ticket.id}`, messageData);
+        toast.success("Mensagem enviada com sucesso!");
+      } catch (err) {
+        toastError(err);
+      }
+    };
+    sendMessage();
+  };
+
+  const handleInternalChatClick = () => {
+    history.push("/chats");
+  };
+
+  const handleGenerateTicket = async () => {
+    if (!ticket.id) {
+      toast.error("Ticket não encontrado");
+      return;
+    }
+
+    try {
+      const response = await api.post("/chat-ai/generate-ticket", {
+        ticketId: ticket.id,
+      });
+
+      const { title, description, clientName } = response.data;
+
+      // Construir URL com os parâmetros
+      const baseUrl = "http://192.168.2.98:5000/tickets/novo";
+      const params = new URLSearchParams({
+        title: title || "Novo Ticket",
+        description: description || "",
+        client_name: clientName || contact?.name || "Cliente",
+      });
+
+      const url = `${baseUrl}?${params.toString()}`;
+
+      setIframeUrl(url);
+      setIframeModalOpen(true);
+    } catch (err) {
+      console.error("Erro ao gerar ticket:", err);
+      toastError(err);
+    }
+  };
+
+  // Verificar se deve mostrar o botão de gerar ticket (apenas para companyId === 1)
+  const companyId = parseInt(localStorage.getItem("companyId") || "0");
+  const showGenerateTicket = companyId === 1;
+
+  const renderMessagesList = () => {
+    if (!ticket.id || !isTicketFromCurrentCompany()) {
+      return null;
+    }
+    return (
+      <>
+        <MessagesList
+          ref={messagesListRef}
+          ticket={ticket}
+          ticketId={ticket.id}
+          isGroup={ticket.isGroup}
+          onAiHandlersReady={setAiHandlers}
+          realTimeTranslationEnabled={translationActive}
+          scrollToMessageId={scrollToMessageId}
+          onScrollToMessageDone={() => setScrollToMessageId(null)}
+          onScrollToMessageRequest={(id) => setScrollToMessageId(id)}
+        />
+        <MessageInput
+          ticketId={ticket.id}
+          ticketStatus={ticket.status}
+          ticketUserId={ticket.userId}
+          ticketQueueId={ticket.queueId}
+          isGroup={ticket.isGroup}
+          onAnalyzeChat={aiHandlers?.handleAnalyzeChat}
+          onSummarizeAudios={aiHandlers?.handleSummarizeAudios}
+          onSuggestResponse={aiHandlers?.handleSuggestResponse}
+          onOptimisticMessage={(msg) => messagesListRef.current?.addOptimisticMessage?.(msg)}
+          onOptimisticMessageFailed={(tempId) => messagesListRef.current?.removeOptimisticMessage?.(tempId)}
+          onScrollToBottom={() => messagesListRef.current?.scrollToBottom?.()}
+        />
+      </>
+    );
+  };
+
+  return (
+    <div className={classes.root} id="drawer-container">
+      <Paper
+        variant="outlined"
+        elevation={0}
+        className={clsx(classes.mainWrapper, {
+          [classes.mainWrapperShift]: drawerOpen,
+        })}
+      >
+        <TicketHeader loading={loading}>
+          {renderTicketInfo()}
+          <TicketActionButtons 
+            ticket={ticket}
+            messageTranslationEnabled={messageTranslationEnabled}
+            realTimeTranslationEnabled={realTimeTranslationEnabled}
+            onToggleTranslation={() => setRealTimeTranslationEnabled(!realTimeTranslationEnabled)}
+            onSearchClick={() => setSearchModalOpen(true)}
+            onMarkAsUnread={() => history.push("/tickets")}
+          />
+        </TicketHeader>
+        <ReplyMessageProvider>
+          <AudioPlayerProvider>
+            {renderMessagesList()}
+          </AudioPlayerProvider>
+        </ReplyMessageProvider>
+      </Paper>
+      <ContactDrawer
+        open={drawerOpen}
+        handleDrawerClose={handleDrawerClose}
+        contact={contact}
+        loading={loading}
+        ticket={ticket}
+      />
+      <TaskModal
+        open={taskModalOpen}
+        onClose={() => setTaskModalOpen(false)}
+        contact={contact}
+        ticket={ticket}
+      />
+      <QuickMessageModal
+        open={quickMessageModalOpen}
+        onClose={() => setQuickMessageModalOpen(false)}
+        onSendMessage={handleQuickMessageSend}
+      />
+      <ScheduleModal
+        open={scheduleModalOpen}
+        onClose={() => setScheduleModalOpen(false)}
+        contact={contact}
+      />
+      <IframeModal
+        open={iframeModalOpen}
+        onClose={() => setIframeModalOpen(false)}
+        url={iframeUrl}
+        title="Gerar Ticket Externo"
+      />
+      {ticket.id && (
+        <QuickActionsMenu
+          onTaskClick={() => setTaskModalOpen(true)}
+          onQuickMessageClick={() => {
+            if (ticket.status === "closed") {
+              toast.info(i18n.t("backendErrors.ERR_TICKET_CLOSED_CANNOT_SEND"), {
+                toastId: "ticket-closed-no-send",
+              });
+              return;
+            }
+            setQuickMessageModalOpen(true);
+          }}
+          onScheduleClick={() => setScheduleModalOpen(true)}
+          onInternalChatClick={handleInternalChatClick}
+          onSearchClick={() => setSearchModalOpen(true)}
+          onGenerateTicketClick={handleGenerateTicket}
+          showGenerateTicket={showGenerateTicket}
+        />
+      )}
+      <SearchMessagesModal
+        open={searchModalOpen}
+        onClose={() => setSearchModalOpen(false)}
+        ticketId={ticket.id}
+        onSelectMessage={(messageId) => {
+          setScrollToMessageId(messageId);
+          setSearchModalOpen(false);
+        }}
+      />
+    </div>
+  );
+};
+
+export default Ticket;

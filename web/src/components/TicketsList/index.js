@@ -1,0 +1,445 @@
+import React, { useState, useEffect, useReducer, useContext } from "react";
+
+import { makeStyles } from "@material-ui/core/styles";
+import List from "@material-ui/core/List";
+import Paper from "@material-ui/core/Paper";
+
+import TicketListItem from "../TicketListItem";
+import TicketsListSkeleton from "../TicketsListSkeleton";
+
+import useTickets from "../../hooks/useTickets";
+import { i18n } from "../../translate/i18n";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { SocketContext } from "../../context/Socket/SocketContext";
+
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
+import { toast } from "react-toastify";
+import { useHistory } from "react-router-dom";
+
+const useStyles = makeStyles((theme) => ({
+	ticketsListWrapper: {
+		position: "relative",
+		display: "flex",
+		height: "100%",
+		flexDirection: "column",
+		overflow: "hidden",
+		borderTopRightRadius: 0,
+		marginRight: -8,
+		borderBottomRightRadius: 0,
+	},
+
+	ticketsList: {
+		flex: 1,
+		overflowY: "scroll",
+		...theme.scrollbarStyles,
+		borderTop: "2px solid rgba(0, 0, 0, 0.12)",
+	},
+
+	ticketsListHeader: {
+		color: "rgb(67, 83, 105)",
+		zIndex: 2,
+		backgroundColor: "white",
+		borderBottom: "1px solid rgba(0, 0, 0, 0.12)",
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "space-between",
+	},
+
+	ticketsCount: {
+		fontWeight: "normal",
+		color: "rgb(104, 121, 146)",
+		marginLeft: "8px",
+		fontSize: "14px",
+	},
+
+	noTicketsText: {
+		textAlign: "center",
+		color: "rgb(104, 121, 146)",
+		fontSize: "14px",
+		lineHeight: "1.4",
+	},
+
+	noTicketsTitle: {
+		textAlign: "center",
+		fontSize: "16px",
+		fontWeight: "600",
+		margin: "0px",
+	},
+
+	noTicketsDiv: {
+		display: "flex",
+		height: "100px",
+		margin: 40,
+		flexDirection: "column",
+		alignItems: "center",
+		justifyContent: "center",
+	},
+}));
+
+const reducer = (state, action) => {
+	if (action.type === "LOAD_TICKETS") {
+		const newTickets = action.payload;
+
+		newTickets.forEach((ticket) => {
+			const ticketIndex = state.findIndex((t) => t.id === ticket.id);
+			if (ticketIndex !== -1) {
+				state[ticketIndex] = ticket;
+				if (ticket.unreadMessages > 0) {
+					state.unshift(state.splice(ticketIndex, 1)[0]);
+				}
+			} else {
+				state.push(ticket);
+			}
+		});
+
+		return [...state];
+	}
+
+	if (action.type === "RESET_UNREAD") {
+		const ticketId = action.payload;
+
+		const ticketIndex = state.findIndex((t) => t.id === ticketId);
+		if (ticketIndex !== -1) {
+			state[ticketIndex].unreadMessages = 0;
+		}
+
+		return [...state];
+	}
+
+	if (action.type === "UPDATE_TICKET") {
+		const ticket = action.payload;
+
+		const ticketIndex = state.findIndex((t) => t.id === ticket.id);
+		if (ticketIndex !== -1) {
+			state[ticketIndex] = ticket;
+		} else {
+			state.unshift(ticket);
+		}
+
+		return [...state];
+	}
+
+	if (action.type === "UPDATE_TICKET_UNREAD_MESSAGES") {
+		const ticket = action.payload;
+
+		const ticketIndex = state.findIndex((t) => t.id === ticket.id);
+		if (ticketIndex !== -1) {
+			state[ticketIndex] = ticket;
+			state.unshift(state.splice(ticketIndex, 1)[0]);
+		} else {
+			state.unshift(ticket);
+		}
+
+		return [...state];
+	}
+
+	if (action.type === "UPDATE_TICKET_CONTACT") {
+		const contact = action.payload;
+		const ticketIndex = state.findIndex((t) => t.contactId === contact.id);
+		if (ticketIndex !== -1) {
+			state[ticketIndex].contact = contact;
+		}
+		return [...state];
+	}
+
+	if (action.type === "DELETE_TICKET") {
+		const ticketId = action.payload;
+		const ticketIndex = state.findIndex((t) => t.id === ticketId);
+		if (ticketIndex !== -1) {
+			state.splice(ticketIndex, 1);
+		}
+
+		return [...state];
+	}
+
+	if (action.type === "RESET") {
+		return [];
+	}
+};
+
+// Função helper para identificar se um ticket é grupo (definida antes do componente para uso em múltiplos lugares)
+const isTicketGroup = (ticket) => {
+	// Verificar campo isGroup do ticket (boolean, string, número)
+	if (ticket.isGroup === true || ticket.isGroup === "true" || ticket.isGroup === 1 || ticket.isGroup === "1") {
+		return true;
+	}
+	
+	// Verificar campo isGroup do contato
+	if (ticket.contact) {
+		if (ticket.contact.isGroup === true || ticket.contact.isGroup === "true" || ticket.contact.isGroup === 1 || ticket.contact.isGroup === "1") {
+			return true;
+		}
+		
+		// Verificar se o número do contato contém @g.us (formato WhatsApp de grupo)
+		// Exemplo: '120363419655140753@g.us'
+		if (ticket.contact.number) {
+			const numberStr = String(ticket.contact.number).trim();
+			// Verificar se termina com @g.us (formato padrão do WhatsApp)
+			if (numberStr.endsWith("@g.us") || numberStr.includes("@g.us")) {
+				return true;
+			}
+			// Verificar se contém g.us (caso o formato seja diferente)
+			if (numberStr.includes("g.us")) {
+				return true;
+			}
+		}
+	}
+	
+	// Verificar se há groupContact (indica que é grupo)
+	if (ticket.groupContact) {
+		return true;
+	}
+	
+	return false;
+};
+
+const TicketsList = (props) => {
+	const {
+		status,
+		searchParam,
+		showAll,
+		selectedQueueIds,
+		updateCount,
+		style,
+		tags,
+		filterIsGroup,
+	} = props;
+	const classes = useStyles();
+	const history = useHistory();
+	const [pageNumber, setPageNumber] = useState(1);
+	const [ticketsList, dispatch] = useReducer(reducer, []);
+	const { user } = useContext(AuthContext);
+	const socketManager = useContext(SocketContext);
+	const { profile, queues } = user;
+	const [settings, setSettings] = useState([]);
+
+
+	useEffect(() => {
+		dispatch({ type: "RESET" });
+		setPageNumber(1);
+	}, [status, searchParam, dispatch, showAll, selectedQueueIds, tags, filterIsGroup]);
+
+	const { tickets, hasMore, loading } = useTickets({
+		pageNumber,
+		searchParam,
+		status,
+		showAll,
+		tags: JSON.stringify(tags),
+		queueIds: JSON.stringify(selectedQueueIds),
+	});
+
+
+
+	useEffect(() => {
+		const fetchSession = async () => {
+			try {
+				const { data } = await api.get("/settings");
+				setSettings(data);
+			} catch (err) {
+				toastError(err);
+			}
+		};
+		fetchSession();
+	}, []);
+
+
+
+	const handleChangeBooleanSetting = async e => {
+		const selectedValue = e.target.checked ? "enabled" : "disabled";
+		const settingKey = e.target.name;
+
+		try {
+			await api.put(`/settings/${settingKey}`, {
+				value: selectedValue,
+			});
+			toast.success(i18n.t("settings.success"));
+			history.go(0);
+		} catch (err) {
+			toastError(err);
+		}
+	};
+
+
+
+	useEffect(() => {
+
+		const queueIds = queues.map((q) => q.id);
+		const matchesUserQueues = (t) => {
+			if (t.queueId == null || t.queueId === "") {
+				// Grupos WhatsApp costumam não ter fila
+				return isTicketGroup(t);
+			}
+			return queueIds.indexOf(t.queueId) > -1;
+		};
+		let filteredTickets = tickets.filter(matchesUserQueues);
+		const allticket = user.allTicket === 'enabled';
+
+		// Função para identificação liberação da settings 
+		let ticketsToLoad = [];
+		if (profile === "admin" || allticket) {
+			ticketsToLoad = tickets;
+		} else {
+			ticketsToLoad = filteredTickets;
+		}
+
+		// Aplicar filtro de grupos se especificado
+		if (filterIsGroup !== undefined) {
+			ticketsToLoad = ticketsToLoad.filter((t) => {
+				const isGroupTicket = isTicketGroup(t);
+				return filterIsGroup ? isGroupTicket : !isGroupTicket;
+			});
+		}
+
+		dispatch({ type: "LOAD_TICKETS", payload: ticketsToLoad });
+
+	}, [tickets, status, searchParam, queues, profile, filterIsGroup, user.allTicket]);
+
+	useEffect(() => {
+		const companyId = localStorage.getItem("companyId");
+		const socket = socketManager.getSocket(companyId);
+		if (!socket) {
+			return () => {};
+		}
+
+		const shouldUpdateTicket = (ticket) =>
+			(!ticket.userId || ticket.userId === user?.id || showAll) &&
+			(!ticket.queueId || selectedQueueIds.indexOf(ticket.queueId) > -1);
+
+		const notBelongsToUserQueues = (ticket) =>
+			ticket.queueId && selectedQueueIds.indexOf(ticket.queueId) === -1;
+
+		const matchesGroupFilter = (ticket) => {
+			if (filterIsGroup === undefined) return true;
+			const isGroupTicket = isTicketGroup(ticket);
+			return filterIsGroup ? isGroupTicket : !isGroupTicket;
+		};
+
+		const handleReady = () => {
+			if (status) {
+				socket.emit("joinTickets", status);
+			} else {
+				socket.emit("joinNotification");
+			}
+		};
+
+		const handleTicket = (data) => {
+			if (data.action === "updateUnread") {
+				dispatch({
+					type: "RESET_UNREAD",
+					payload: data.ticketId,
+				});
+			}
+
+			if (data.action === "update" && shouldUpdateTicket(data.ticket)) {
+				// Aplicar filtro de grupos antes de atualizar
+				if (matchesGroupFilter(data.ticket)) {
+					dispatch({
+						type: "UPDATE_TICKET",
+						payload: data.ticket,
+					});
+				} else {
+					// Se não corresponde ao filtro, remover o ticket
+					dispatch({ type: "DELETE_TICKET", payload: data.ticket.id });
+				}
+			}
+
+			if (data.action === "update" && notBelongsToUserQueues(data.ticket)) {
+				dispatch({ type: "DELETE_TICKET", payload: data.ticket.id });
+			}
+
+			if (data.action === "delete") {
+				dispatch({ type: "DELETE_TICKET", payload: data.ticketId });
+			}
+		};
+
+		const handleAppMessage = (data) => {
+			if (data.action === "create" && shouldUpdateTicket(data.ticket)) {
+				// Aplicar filtro de grupos antes de atualizar
+				if (matchesGroupFilter(data.ticket)) {
+					dispatch({
+						type: "UPDATE_TICKET_UNREAD_MESSAGES",
+						payload: data.ticket,
+					});
+				}
+			}
+		};
+
+		const handleContact = (data) => {
+			if (data.action === "update") {
+				dispatch({
+					type: "UPDATE_TICKET_CONTACT",
+					payload: data.contact,
+				});
+			}
+		};
+
+		socket.on("ready", handleReady);
+		socket.on(`company-${companyId}-ticket`, handleTicket);
+		socket.on(`company-${companyId}-appMessage`, handleAppMessage);
+		socket.on(`company-${companyId}-contact`, handleContact);
+
+		return () => {
+			socket.off("ready", handleReady);
+			socket.off(`company-${companyId}-ticket`, handleTicket);
+			socket.off(`company-${companyId}-appMessage`, handleAppMessage);
+			socket.off(`company-${companyId}-contact`, handleContact);
+		};
+	}, [status, showAll, user, selectedQueueIds, filterIsGroup, socketManager]);
+
+
+	useEffect(() => {
+		if (typeof updateCount === "function") {
+			updateCount(ticketsList.length);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [ticketsList]);
+
+	const loadMore = () => {
+		setPageNumber((prevState) => prevState + 1);
+	};
+
+	const handleScroll = (e) => {
+		if (!hasMore || loading) return;
+
+		const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+
+		if (scrollHeight - (scrollTop + 100) < clientHeight) {
+			loadMore();
+		}
+	};
+
+	return (
+		<Paper className={classes.ticketsListWrapper} style={style}>
+			<Paper
+				square
+				name="closed"
+				elevation={0}
+				className={classes.ticketsList}
+				onScroll={handleScroll}
+			>
+				<List style={{ paddingTop: 0 }}>
+					{ticketsList.length === 0 && !loading ? (
+						<div className={classes.noTicketsDiv}>
+							<span className={classes.noTicketsTitle}>
+								{i18n.t("ticketsList.noTicketsTitle")}
+							</span>
+							<p className={classes.noTicketsText}>
+								{i18n.t("ticketsList.noTicketsMessage")}
+							</p>
+						</div>
+					) : (
+						<>
+							{ticketsList.map((ticket) => (
+								<TicketListItem ticket={ticket} key={ticket.id} />
+							))}
+						</>
+					)}
+					{loading && <TicketsListSkeleton />}
+				</List>
+			</Paper>
+		</Paper>
+	);
+};
+
+export default TicketsList;

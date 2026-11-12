@@ -1,0 +1,728 @@
+{% extends "base.html" %}
+{% block title %}Balcão — Print Agent{% endblock %}
+{% block extra_css %}
+<style>
+    .shell { max-width: 1240px; }
+    .balcao-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-end;
+        margin-bottom: 1rem;
+    }
+    .next-pill {
+        background: var(--accent-soft);
+        color: var(--accent);
+        border-radius: 999px;
+        padding: 0.45rem 0.8rem;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+        gap: 1rem;
+        align-items: start;
+    }
+    .search-row { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.75rem; }
+    .chip {
+        background: #f3f7f9;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.3rem 0.7rem;
+        font-size: 0.82rem;
+    }
+    .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .product-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        gap: 0.55rem;
+        max-height: 62vh;
+        overflow: auto;
+        padding-right: 0.15rem;
+    }
+    .product-card {
+        text-align: left;
+        background: #f7fafb;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        min-height: 78px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 0.35rem;
+    }
+    .product-card:hover { background: var(--accent-soft); color: var(--ink); }
+    .product-card strong { font-size: 0.92rem; }
+    .product-card span { color: var(--muted); font-size: 0.82rem; font-weight: 600; }
+    .cart-box {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 0.8rem;
+        background: #f8fbfb;
+    }
+    .cart-line {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.35rem 0.6rem;
+        padding: 0.55rem 0;
+        border-bottom: 1px solid var(--line);
+    }
+    .cart-line:last-child { border-bottom: none; }
+    .qty {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+    }
+    .qty button, .linkish {
+        background: #fff;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        padding: 0.2rem 0.5rem;
+        border-radius: 8px;
+    }
+    .qty button:hover, .linkish:hover { background: #e8eef2; color: var(--ink); }
+    .cart-total {
+        display: flex;
+        justify-content: space-between;
+        font-weight: 800;
+        margin: 0.7rem 0;
+    }
+    .open-list { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 1rem; }
+    .open-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 0.7rem 0.8rem;
+        display: flex;
+        justify-content: space-between;
+        gap: 0.8rem;
+    }
+    .muted { color: var(--muted); font-size: 0.85rem; }
+    .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(20, 33, 43, 0.45);
+        display: none;
+        place-items: center;
+        padding: 1rem;
+        z-index: 20;
+    }
+    .overlay.open { display: grid; }
+    .sheet {
+        background: #fff;
+        border-radius: 16px;
+        width: min(520px, 100%);
+        max-height: min(86vh, 720px);
+        overflow: auto;
+        padding: 1rem 1.1rem 1.1rem;
+        box-shadow: var(--shadow);
+    }
+    .choices { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.35rem 0 0.8rem; }
+    .choice {
+        background: #f3f7f9;
+        color: var(--ink);
+        border: 1px solid var(--line);
+    }
+    .choice:hover { background: #e8eef2; color: var(--ink); }
+    .choice.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .sheet-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.8rem; }
+    @media (max-width: 860px) {
+        .layout { grid-template-columns: 1fr; }
+        .product-grid { max-height: none; }
+        .balcao-top { flex-direction: column; align-items: flex-start; }
+    }
+</style>
+{% endblock %}
+{% block content %}
+<div class="balcao-top">
+    <div>
+        <h2 class="page-title">Venda de balcão</h2>
+        <p class="page-sub" style="margin-bottom:0">A venda ocupa a primeira comanda livre a partir da <strong id="inicioLabel">{{ inicio }}</strong> e só solta o número quando a conta fecha no Uniplus.</p>
+    </div>
+    <div class="next-pill" id="nextPill">Próxima comanda —</div>
+</div>
+<div id="pageAlert"></div>
+<div class="layout">
+    <section>
+        <div class="search-row">
+            <input id="search" type="text" placeholder="Buscar produto" autocomplete="off">
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="product-grid" id="products"></div>
+    </section>
+    <aside class="cart-box">
+        <div class="form-group">
+            <label for="customer">Cliente</label>
+            <input id="customer" type="text" placeholder="Balcão" maxlength="60">
+        </div>
+        <div id="cart"></div>
+        <div class="cart-total"><span>Total</span><span id="cartTotal">R$ 0,00</span></div>
+        <button id="send" type="button" style="width:100%">Enviar venda</button>
+        <p class="muted" id="sendHint" style="margin-top:0.55rem">A cozinha imprime com o título Venda balcão e o número da comanda.</p>
+    </aside>
+</div>
+<section style="margin-top:1.25rem">
+    <h3 style="font-size:1.02rem">Comandas de balcão abertas</h3>
+    <p class="muted">O número volta para a fila quando a conta deixa de estar aberta no Uniplus.</p>
+    <div class="open-list" id="openSales"></div>
+</section>
+<details style="margin-top:1rem">
+    <summary style="cursor:pointer;font-weight:700">Faixa de comandas</summary>
+    <p class="hint">Números a partir deste valor não aparecem no POS. O padrão é 900.</p>
+    <div style="display:flex;gap:0.5rem;max-width:280px;margin-top:0.5rem">
+        <input id="inicioInput" type="number" min="1" max="99999" value="{{ inicio }}">
+        <button id="saveInicio" type="button" class="btn-ghost">Salvar</button>
+    </div>
+</details>
+<div class="overlay" id="overlay">
+    <div class="sheet" id="sheet"></div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+(function () {
+    var products = [];
+    var groups = {};
+    var cart = [];
+    var grupo = "";
+    var sending = false;
+
+    function money(value) {
+        return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    }
+
+    function alertBox(kind, text) {
+        var el = document.getElementById("pageAlert");
+        if (!text) { el.innerHTML = ""; return; }
+        el.innerHTML = '<div class="alert ' + (kind === "ok" ? "alert-success" : "alert-error") + '"></div>';
+        el.firstChild.textContent = text;
+    }
+
+    function groupOf(id) {
+        return groups[String(id)] || null;
+    }
+
+    function needsDialog(product) {
+        return !!(product.variablePrice || (product.variations && product.variations.length) || product.addOnGroupId);
+    }
+
+    function lineTotal(line) {
+        var add = 0;
+        (line.addons || []).forEach(function (addon) {
+            add += Number(addon.value || 0) * Math.max(1, Number(addon.quantity || 1));
+        });
+        return (Number(line.productValue || 0) + add) * Number(line.quantity || 1);
+    }
+
+    function sameLine(a, b) {
+        return a.productId === b.productId
+            && String(a.optionKey || "") === String(b.optionKey || "")
+            && String(a.addonKey || "") === String(b.addonKey || "")
+            && String(a.observation || "") === String(b.observation || "")
+            && Number(a.productValue) === Number(b.productValue);
+    }
+
+    function renderProducts() {
+        var q = document.getElementById("search").value.trim().toLowerCase();
+        var host = document.getElementById("products");
+        host.innerHTML = "";
+        var shown = products.filter(function (product) {
+            if (grupo && product.grupo !== grupo) return false;
+            if (!q) return true;
+            return String(product.name || "").toLowerCase().indexOf(q) >= 0;
+        });
+        if (!products.length) {
+            host.innerHTML = '<p class="muted">Nenhum produto no catálogo. Sincronize o catálogo do POS em Configuração.</p>';
+            return;
+        }
+        if (!shown.length) {
+            host.innerHTML = '<p class="muted">Nenhum produto com esse filtro.</p>';
+            return;
+        }
+        shown.forEach(function (product) {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "product-card";
+            var name = document.createElement("strong");
+            name.textContent = product.name;
+            var price = document.createElement("span");
+            price.textContent = product.variations && product.variations.length ? "Escolher" : money(product.value);
+            button.appendChild(name);
+            button.appendChild(price);
+            button.addEventListener("click", function () {
+                if (needsDialog(product)) openDialog(product);
+                else addLine(quickLine(product));
+            });
+            host.appendChild(button);
+        });
+    }
+
+    function renderChips() {
+        var names = [];
+        products.forEach(function (product) {
+            if (product.grupo && names.indexOf(product.grupo) < 0) names.push(product.grupo);
+        });
+        names.sort();
+        var host = document.getElementById("chips");
+        host.innerHTML = "";
+        [["", "Todos"]].concat(names.map(function (name) { return [name, name]; })).forEach(function (pair) {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "chip" + (grupo === pair[0] ? " active" : "");
+            button.textContent = pair[1];
+            button.addEventListener("click", function () {
+                grupo = pair[0];
+                renderChips();
+                renderProducts();
+            });
+            host.appendChild(button);
+        });
+    }
+
+    function renderCart() {
+        var host = document.getElementById("cart");
+        host.innerHTML = "";
+        if (!cart.length) {
+            host.innerHTML = '<p class="muted">Nenhum item ainda.</p>';
+        }
+        cart.forEach(function (line, index) {
+            var row = document.createElement("div");
+            row.className = "cart-line";
+            var info = document.createElement("div");
+            var title = document.createElement("strong");
+            title.textContent = line.productName;
+            info.appendChild(title);
+            if (line.observation) {
+                var obs = document.createElement("div");
+                obs.className = "muted";
+                obs.textContent = line.observation;
+                info.appendChild(obs);
+            }
+            var price = document.createElement("div");
+            price.className = "muted";
+            price.textContent = money(lineTotal(line));
+            info.appendChild(price);
+            var controls = document.createElement("div");
+            controls.className = "qty";
+            var minus = document.createElement("button");
+            minus.type = "button";
+            minus.textContent = "−";
+            minus.addEventListener("click", function () { changeQty(index, -1); });
+            var qty = document.createElement("span");
+            qty.textContent = String(line.quantity);
+            var plus = document.createElement("button");
+            plus.type = "button";
+            plus.textContent = "+";
+            plus.addEventListener("click", function () { changeQty(index, 1); });
+            var remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "linkish";
+            remove.textContent = "tirar";
+            remove.addEventListener("click", function () { cart.splice(index, 1); renderCart(); });
+            controls.appendChild(minus);
+            controls.appendChild(qty);
+            controls.appendChild(plus);
+            controls.appendChild(remove);
+            row.appendChild(info);
+            row.appendChild(controls);
+            host.appendChild(row);
+        });
+        var total = cart.reduce(function (sum, line) { return sum + lineTotal(line); }, 0);
+        document.getElementById("cartTotal").textContent = money(total);
+        document.getElementById("send").disabled = sending || !cart.length;
+    }
+
+    function changeQty(index, delta) {
+        var line = cart[index];
+        if (!line) return;
+        line.quantity = Math.max(1, Math.min(99, Number(line.quantity || 1) + delta));
+        renderCart();
+    }
+
+    function addLine(line) {
+        var found = cart.filter(function (current) { return sameLine(current, line); })[0];
+        if (found) found.quantity = Math.min(99, Number(found.quantity) + Number(line.quantity || 1));
+        else cart.push(line);
+        renderCart();
+    }
+
+    function quickLine(product) {
+        return {
+            productId: product.id,
+            productName: product.name,
+            productValue: Number(product.value || 0),
+            quantity: 1,
+            grupo: product.grupo || "",
+            idUniplus: product.idUniplus || "",
+            observation: "",
+            addons: [],
+            optionKey: "",
+            addonKey: ""
+        };
+    }
+
+    function optionKey(selected) {
+        return selected.map(function (option) { return String(option.id); }).join(",");
+    }
+
+    function addonKey(addons) {
+        return addons.map(function (addon) {
+            return String(addon.addOnItemId) + "x" + String(addon.quantity || 1);
+        }).join(",");
+    }
+
+    function openDialog(product) {
+        var selected = {};
+        var picked = {};
+        function sheetError(text) {
+            var err = document.getElementById("dlgErr");
+            if (!err) {
+                err = document.createElement("p");
+                err.id = "dlgErr";
+                err.style.color = "var(--danger)";
+                err.style.fontWeight = "700";
+                err.style.marginBottom = "0.5rem";
+                sheet.insertBefore(err, title.nextSibling);
+            }
+            err.textContent = text;
+        }
+        var overlay = document.getElementById("overlay");
+        var sheet = document.getElementById("sheet");
+        sheet.innerHTML = "";
+        var title = document.createElement("h3");
+        title.textContent = product.name;
+        title.style.marginBottom = "0.7rem";
+        sheet.appendChild(title);
+
+        (product.variations || []).forEach(function (variation) {
+            var label = document.createElement("div");
+            label.style.fontWeight = "700";
+            label.textContent = variation.name;
+            sheet.appendChild(label);
+            var row = document.createElement("div");
+            row.className = "choices";
+            (variation.options || []).forEach(function (option) {
+                var button = document.createElement("button");
+                button.type = "button";
+                button.className = "choice";
+                button.textContent = option.label + (option.value ? " · " + money(option.value) : "");
+                button.addEventListener("click", function () {
+                    selected[variation.id] = option;
+                    Array.prototype.forEach.call(row.children, function (child) {
+                        child.classList.remove("on");
+                    });
+                    button.classList.add("on");
+                });
+                row.appendChild(button);
+            });
+            sheet.appendChild(row);
+        });
+
+        var addonGroup = groupOf(product.addOnGroupId);
+        function paintItems(titleText, items, maxItems) {
+            if (!items || !items.length) return;
+            var label = document.createElement("div");
+            label.style.fontWeight = "700";
+            label.textContent = titleText;
+            sheet.appendChild(label);
+            var row = document.createElement("div");
+            row.className = "choices";
+            items.forEach(function (item) {
+                var button = document.createElement("button");
+                button.type = "button";
+                button.className = "choice";
+                button.textContent = item.label + (item.value ? " · " + money(item.value) : "");
+                button.addEventListener("click", function () {
+                    if (picked[item.id]) {
+                        delete picked[item.id];
+                        button.classList.remove("on");
+                        return;
+                    }
+                    var inRow = items.filter(function (it) { return picked[it.id]; }).length;
+                    if (maxItems && inRow >= Number(maxItems)) {
+                        if (Number(maxItems) === 1) {
+                            items.forEach(function (it) { delete picked[it.id]; });
+                            Array.prototype.forEach.call(row.children, function (child) {
+                                child.classList.remove("on");
+                            });
+                        } else {
+                            return;
+                        }
+                    }
+                    picked[item.id] = item;
+                    button.classList.add("on");
+                });
+                row.appendChild(button);
+            });
+            sheet.appendChild(row);
+        }
+        if (addonGroup) {
+            paintItems(addonGroup.name || "Adicionais", addonGroup.items, addonGroup.maxItems);
+            (addonGroup.subgroups || []).forEach(function (subgroup) {
+                paintItems(subgroup.name, subgroup.items, subgroup.maxItems);
+            });
+        }
+
+        if (product.variablePrice) {
+            var priceLabel = document.createElement("label");
+            priceLabel.textContent = "Preço";
+            var priceInput = document.createElement("input");
+            priceInput.type = "number";
+            priceInput.min = "0";
+            priceInput.step = "0.01";
+            priceInput.value = String(product.value || 0);
+            priceInput.id = "dlgPrice";
+            sheet.appendChild(priceLabel);
+            sheet.appendChild(priceInput);
+        }
+        var obsLabel = document.createElement("label");
+        obsLabel.textContent = "Observação";
+        obsLabel.style.marginTop = "0.6rem";
+        var obs = document.createElement("input");
+        obs.type = "text";
+        obs.id = "dlgObs";
+        obs.maxLength = 180;
+        sheet.appendChild(obsLabel);
+        sheet.appendChild(obs);
+
+        var actions = document.createElement("div");
+        actions.className = "sheet-actions";
+        var cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "btn-ghost";
+        cancel.textContent = "Cancelar";
+        cancel.addEventListener("click", closeDialog);
+        var ok = document.createElement("button");
+        ok.type = "button";
+        ok.textContent = "Adicionar";
+        ok.addEventListener("click", function () {
+            var chosen = [];
+            (product.variations || []).forEach(function (variation) {
+                if ((variation.options || []).length && !selected[variation.id]) {
+                    chosen.push(null);
+                } else if (selected[variation.id]) {
+                    chosen.push(selected[variation.id]);
+                }
+            });
+            if (chosen.indexOf(null) >= 0) {
+                sheetError("Escolha a opção do produto.");
+                return;
+            }
+            if (addonGroup) {
+                var minRoot = addonGroup.minItems || (addonGroup.required ? 1 : 0);
+                var rootCount = (addonGroup.items || []).filter(function (item) { return picked[item.id]; }).length;
+                if (rootCount < minRoot) {
+                    sheetError("Escolha os adicionais de " + (addonGroup.name || "adicionais") + ".");
+                    return;
+                }
+                var blocked = false;
+                (addonGroup.subgroups || []).forEach(function (subgroup) {
+                    var minSub = subgroup.minItems || (subgroup.required ? 1 : 0);
+                    var subCount = (subgroup.items || []).filter(function (item) { return picked[item.id]; }).length;
+                    if (subCount < minSub) blocked = true;
+                });
+                if (blocked) {
+                    sheetError("Escolha os adicionais obrigatórios.");
+                    return;
+                }
+            }
+            chosen = chosen.filter(Boolean);
+            var coded = chosen.filter(function (option) { return option.idUniplus; })[0] || chosen[0];
+            var addons = Object.keys(picked).map(function (id) {
+                var item = picked[id];
+                return {
+                    addOnItemId: item.id,
+                    label: item.label,
+                    value: Number(item.value || 0),
+                    idUniplus: item.idUniplus || "",
+                    quantity: 1
+                };
+            });
+            var price = coded && chosen.length === 1 ? Number(coded.value || product.value || 0) : Number(product.value || 0);
+            if (chosen.length > 1) {
+                var priced = chosen.filter(function (option) { return Number(option.value) > 0; });
+                if (priced.length) price = Number(priced[priced.length - 1].value);
+            }
+            var priceField = document.getElementById("dlgPrice");
+            if (priceField) price = Number(priceField.value || 0);
+            var labels = chosen.map(function (option) { return option.label; }).filter(Boolean);
+            addLine({
+                productId: product.id,
+                productName: labels.length ? product.name + " — " + labels.join(" / ") : product.name,
+                productValue: price,
+                quantity: 1,
+                optionId: coded ? coded.id : null,
+                grupo: product.grupo || "",
+                idUniplus: (coded && coded.idUniplus) || product.idUniplus || "",
+                observation: document.getElementById("dlgObs").value.trim(),
+                addons: addons,
+                optionKey: optionKey(chosen),
+                addonKey: addonKey(addons)
+            });
+            closeDialog();
+            alertBox("", "");
+        });
+        actions.appendChild(cancel);
+        actions.appendChild(ok);
+        sheet.appendChild(actions);
+        overlay.classList.add("open");
+    }
+
+    function closeDialog() {
+        document.getElementById("overlay").classList.remove("open");
+    }
+
+    function renderOpen(data) {
+        var pill = document.getElementById("nextPill");
+        if (data && data.next) pill.textContent = "Próxima comanda " + data.next;
+        else pill.textContent = "Próxima comanda —";
+        if (data && data.inicio) {
+            document.getElementById("inicioLabel").textContent = String(data.inicio);
+            document.getElementById("inicioInput").value = String(data.inicio);
+        }
+        var host = document.getElementById("openSales");
+        host.innerHTML = "";
+        var sales = (data && data.sales) || [];
+        if (!sales.length) {
+            host.innerHTML = '<p class="muted">Nenhuma venda de balcão aberta.</p>';
+            return;
+        }
+        sales.forEach(function (sale) {
+            var card = document.createElement("div");
+            card.className = "open-card";
+            var left = document.createElement("div");
+            var title = document.createElement("strong");
+            title.textContent = "Comanda " + sale.numeromesa + " · " + (sale.customerName || "Balcão");
+            left.appendChild(title);
+            var items = (sale.items || []).map(function (item) {
+                return String(item.quantity) + "× " + item.name;
+            }).join(", ");
+            var detail = document.createElement("div");
+            detail.className = "muted";
+            detail.textContent = items || "Itens enviados";
+            left.appendChild(detail);
+            if (!sale.uniplusSeen) {
+                var wait = document.createElement("div");
+                wait.className = "muted";
+                wait.textContent = "Aguardando a conta aparecer no Uniplus.";
+                left.appendChild(wait);
+            }
+            if (sale.printError) {
+                var printErr = document.createElement("div");
+                printErr.className = "muted";
+                printErr.textContent = sale.printError;
+                left.appendChild(printErr);
+            }
+            var right = document.createElement("div");
+            right.style.textAlign = "right";
+            var total = document.createElement("strong");
+            total.textContent = money(sale.total);
+            right.appendChild(total);
+            card.appendChild(left);
+            card.appendChild(right);
+            host.appendChild(card);
+        });
+    }
+
+    function loadOpen() {
+        return fetch("/balcao/open").then(function (res) { return res.json(); }).then(function (data) {
+            renderOpen(data);
+            if (data.error) alertBox("err", data.error);
+            return data;
+        }).catch(function () {
+            alertBox("err", "Não foi possível consultar as comandas de balcão.");
+        });
+    }
+
+    function loadCatalog() {
+        return fetch("/balcao/catalog").then(function (res) { return res.json(); }).then(function (data) {
+            products = data.products || [];
+            groups = {};
+            (data.groups || []).forEach(function (group) {
+                groups[String(group.id)] = group;
+            });
+            renderChips();
+            renderProducts();
+        }).catch(function () {
+            alertBox("err", "Não foi possível carregar o catálogo.");
+        });
+    }
+
+    document.getElementById("search").addEventListener("input", renderProducts);
+    document.getElementById("overlay").addEventListener("click", function (event) {
+        if (event.target.id === "overlay") closeDialog();
+    });
+    document.getElementById("send").addEventListener("click", function () {
+        if (sending || !cart.length) return;
+        sending = true;
+        renderCart();
+        alertBox("", "");
+        var payload = {
+            customerName: document.getElementById("customer").value.trim(),
+            menuItems: cart.map(function (line) {
+                return {
+                    productId: line.productId,
+                    productName: line.productName,
+                    productValue: line.productValue,
+                    quantity: line.quantity,
+                    optionId: line.optionId || null,
+                    grupo: line.grupo || "",
+                    idUniplus: line.idUniplus || "",
+                    observation: line.observation || "",
+                    addons: line.addons || []
+                };
+            })
+        };
+        fetch("/balcao/sales", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }).then(function (res) {
+            return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+            sending = false;
+            if (!result.ok) {
+                alertBox("err", (result.data && result.data.error) || "Não foi possível enviar a venda.");
+                renderCart();
+                return;
+            }
+            cart = [];
+            document.getElementById("customer").value = "";
+            renderCart();
+            var printed = result.data.printed ? " Cupom impresso." : "";
+            var printErr = result.data.printError ? " " + result.data.printError : "";
+            alertBox("ok", "Venda enviada na comanda " + result.data.numeromesa + "." + printed + printErr);
+            loadOpen();
+        }).catch(function () {
+            sending = false;
+            renderCart();
+            alertBox("err", "Não foi possível falar com o agente.");
+        });
+    });
+    document.getElementById("saveInicio").addEventListener("click", function () {
+        var value = Number(document.getElementById("inicioInput").value);
+        fetch("/balcao/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ inicio: value })
+        }).then(function (res) {
+            return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+            if (!result.ok) {
+                alertBox("err", (result.data && result.data.error) || "Não foi possível salvar a faixa.");
+                return;
+            }
+            alertBox("ok", "Faixa de balcão atualizada. O POS deixa de listar comandas a partir desse número.");
+            loadOpen();
+        });
+    });
+
+    renderCart();
+    loadCatalog();
+    loadOpen();
+    setInterval(loadOpen, 8000);
+})();
+</script>
+{% endblock %}

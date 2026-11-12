@@ -1,0 +1,615 @@
+import React, { useState, useEffect, useContext } from "react";
+
+import * as Yup from "yup";
+import { Formik, Form, Field } from "formik";
+import { toast } from "react-toastify";
+
+import { makeStyles } from "@material-ui/core/styles";
+import { green } from "@material-ui/core/colors";
+import Button from "@material-ui/core/Button";
+import TextField from "@material-ui/core/TextField";
+import Dialog from "@material-ui/core/Dialog";
+import DialogActions from "@material-ui/core/DialogActions";
+import DialogContent from "@material-ui/core/DialogContent";
+import DialogTitle from "@material-ui/core/DialogTitle";
+import CircularProgress from "@material-ui/core/CircularProgress";
+import Select from "@material-ui/core/Select";
+import InputLabel from "@material-ui/core/InputLabel";
+import MenuItem from "@material-ui/core/MenuItem";
+import FormControl from "@material-ui/core/FormControl";
+import FormControlLabel from "@material-ui/core/FormControlLabel";
+import Switch from "@material-ui/core/Switch";
+import Avatar from "@material-ui/core/Avatar";
+import IconButton from "@material-ui/core/IconButton";
+import PhotoCameraIcon from "@material-ui/icons/PhotoCamera";
+import Typography from "@material-ui/core/Typography";
+import Divider from "@material-ui/core/Divider";
+import List from "@material-ui/core/List";
+import ListItem from "@material-ui/core/ListItem";
+import ListItemText from "@material-ui/core/ListItemText";
+import ListItemAvatar from "@material-ui/core/ListItemAvatar";
+import PhoneIcon from "@material-ui/icons/Phone";
+import EmailIcon from "@material-ui/icons/Email";
+
+import { i18n } from "../../translate/i18n";
+
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
+import QueueSelect from "../QueueSelect";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { Can } from "../Can";
+import useWhatsApps from "../../hooks/useWhatsApps";
+import UserAvailabilitySettings from "../UserAvailabilitySettings";
+import UserPagePermissionsEditor from "../UserPagePermissionsEditor";
+import useCompanyModules from "../../hooks/useCompanyModules";
+import {
+	filterPageAccessForModules,
+	getLanchoneteDefaultRouteOptions,
+	isDefaultRouteAvailableForModules,
+} from "../../constants/pagePermissions";
+import { getBackendUrl } from "../../config/backendUrl";
+
+const useStyles = makeStyles(theme => ({
+	root: {
+		display: "flex",
+		flexWrap: "wrap",
+	},
+	multFieldLine: {
+		display: "flex",
+		"& > *:not(:last-child)": {
+			marginRight: theme.spacing(1),
+		},
+	},
+
+	btnWrapper: {
+		position: "relative",
+	},
+
+	buttonProgress: {
+		color: green[500],
+		position: "absolute",
+		top: "50%",
+		left: "50%",
+		marginTop: -12,
+		marginLeft: -12,
+	},
+	formControl: {
+		margin: theme.spacing(1),
+		minWidth: 120,
+	},
+	avatarContainer: {
+		display: "flex",
+		flexDirection: "column",
+		alignItems: "center",
+		marginBottom: theme.spacing(2),
+	},
+	avatar: {
+		width: 100,
+		height: 100,
+		marginBottom: theme.spacing(1),
+	},
+	avatarInput: {
+		display: "none",
+	},
+	avatarButton: {
+		marginTop: theme.spacing(1),
+	},
+	contactsSection: {
+		marginTop: theme.spacing(2),
+	},
+	contactsList: {
+		maxHeight: 300,
+		overflowY: "auto",
+		...theme.scrollbarStyles,
+	},
+	contactItem: {
+		paddingLeft: theme.spacing(1),
+		paddingRight: theme.spacing(1),
+	},
+	noContacts: {
+		padding: theme.spacing(2),
+		textAlign: "center",
+		color: theme.palette.text.secondary,
+	},
+}));
+
+const UserSchema = Yup.object().shape({
+	name: Yup.string()
+		.min(2, i18n.t("userModal.formErrors.name.short"))
+		.max(50, i18n.t("userModal.formErrors.name.long"))
+		.required(i18n.t("userModal.formErrors.name.required")),
+	password: Yup.string().min(5, i18n.t("userModal.formErrors.password.short")).max(50, i18n.t("userModal.formErrors.password.long")),
+	email: Yup.string().email(i18n.t("userModal.formErrors.email.invalid")).required(i18n.t("userModal.formErrors.email.required")),
+});
+
+const UserModal = ({ open, onClose, userId }) => {
+	const classes = useStyles();
+
+	const initialState = {
+		name: "",
+		email: "",
+		password: "",
+		profile: "user",
+		allTicket: "desabled",
+		defaultRoute: ""
+	};
+
+	const { user: loggedInUser } = useContext(AuthContext);
+
+	const [user, setUser] = useState(initialState);
+	const [selectedQueueIds, setSelectedQueueIds] = useState([]);
+	const [whatsappId, setWhatsappId] = useState(false);
+	const [avatarFile, setAvatarFile] = useState(null);
+	const [avatarPreview, setAvatarPreview] = useState(null);
+	const [userContacts, setUserContacts] = useState([]);
+	const [loadingContacts, setLoadingContacts] = useState(false);
+	const [pageAccess, setPageAccess] = useState(null);
+	const { loading, whatsApps } = useWhatsApps();
+	const {
+		hasLanchonetes,
+		hasAgendamento,
+		loading: modulesLoading,
+	} = useCompanyModules();
+	const moduleFlags = { hasLanchonetes, hasAgendamento };
+	const lanchoneteDefaultRouteOptions = getLanchoneteDefaultRouteOptions();
+
+	useEffect(() => {
+		const fetchUser = async () => {
+			if (!userId) return;
+			try {
+				const { data } = await api.get(`/users/${userId}`);
+				setUser(prevState => {
+					return { ...prevState, ...data };
+				});
+				const userQueueIds = data.queues?.map(queue => queue.id);
+				setSelectedQueueIds(userQueueIds);
+				setWhatsappId(data.whatsappId ? data.whatsappId : '');
+				if (data.avatar) {
+					setAvatarPreview(`${getBackendUrl()}/public/${data.avatar}`);
+				} else {
+					setAvatarPreview(null);
+				}
+				setPageAccess(data.pageAccess || null);
+			} catch (err) {
+				toastError(err);
+			}
+		};
+
+		const fetchUserContacts = async () => {
+			if (!userId || !open) return;
+			setLoadingContacts(true);
+			try {
+				const { data } = await api.get(`/users/${userId}/contacts`);
+				setUserContacts(data.contacts || []);
+			} catch (err) {
+				toastError(err);
+			} finally {
+				setLoadingContacts(false);
+			}
+		};
+
+		fetchUser();
+		if (userId) {
+			fetchUserContacts();
+		}
+	}, [userId, open, loggedInUser?.id]);
+
+	useEffect(() => {
+		if (!hasLanchonetes && user.defaultRoute) {
+			setUser((prev) => ({ ...prev, defaultRoute: "" }));
+			return;
+		}
+		if (
+			user.defaultRoute &&
+			!isDefaultRouteAvailableForModules(user.defaultRoute, moduleFlags)
+		) {
+			setUser((prev) => ({ ...prev, defaultRoute: "" }));
+		}
+	}, [hasLanchonetes, hasAgendamento, user.defaultRoute]);
+
+	useEffect(() => {
+		if (!open) return;
+		if (user.profile === "admin") {
+			setPageAccess(null);
+		}
+	}, [open, user.profile]);
+
+	const handleClose = () => {
+		onClose();
+		setUser(initialState);
+		setAvatarFile(null);
+		setAvatarPreview(null);
+		setUserContacts([]);
+		setPageAccess(null);
+	};
+
+	const handleAvatarChange = (e) => {
+		const file = e.target.files[0];
+		if (file) {
+			if (file.size > 5 * 1024 * 1024) {
+				toast.error("Arquivo muito grande! Máximo 5MB");
+				return;
+			}
+			setAvatarFile(file);
+			setAvatarPreview(URL.createObjectURL(file));
+		}
+	};
+
+	const handleUploadAvatar = async () => {
+		if (!avatarFile || !userId) return;
+		
+		try {
+			const formData = new FormData();
+			formData.append("avatar", avatarFile);
+			const { data } = await api.post(`/users/${userId}/avatar`, formData);
+			setUser(prev => ({ ...prev, avatar: data.avatar }));
+			setAvatarFile(null);
+			if (data.avatar) {
+				setAvatarPreview(`${getBackendUrl()}/public/${data.avatar}`);
+			}
+			toast.success("Foto atualizada com sucesso!");
+		} catch (err) {
+			toastError(err);
+		}
+	};
+
+	const handleSaveUser = async values => {
+		const safeDefaultRoute =
+			hasLanchonetes &&
+			values.defaultRoute &&
+			isDefaultRouteAvailableForModules(values.defaultRoute, moduleFlags)
+				? values.defaultRoute
+				: null;
+
+		const userData = {
+			...values,
+			whatsappId,
+			queueIds: selectedQueueIds,
+			allTicket: values.allTicket,
+			defaultRoute: safeDefaultRoute,
+			pageAccess:
+				values.profile === "user"
+					? filterPageAccessForModules(pageAccess, moduleFlags)
+					: null,
+		};
+		try {
+			if (userId) {
+				await api.put(`/users/${userId}`, userData);
+			} else {
+				await api.post("/users", userData);
+			}
+			toast.success(i18n.t("userModal.success"));
+		} catch (err) {
+			toastError(err);
+		}
+		handleClose();
+	};
+
+	return (
+		<div className={classes.root}>
+			<Dialog
+				open={open}
+				onClose={handleClose}
+				maxWidth="sm"
+				fullWidth
+				scroll="paper"
+			>
+				<DialogTitle id="form-dialog-title">
+					{userId
+						? `${i18n.t("userModal.title.edit")}`
+						: `${i18n.t("userModal.title.add")}`}
+				</DialogTitle>
+				<Formik
+					initialValues={user}
+					enableReinitialize={true}
+					validationSchema={UserSchema}
+					onSubmit={(values, actions) => {
+						setTimeout(() => {
+							handleSaveUser(values);
+							actions.setSubmitting(false);
+						}, 400);
+					}}
+				>
+					{({ touched, errors, isSubmitting, values }) => (
+						<Form>
+							<DialogContent dividers>
+								{userId && (
+									<div className={classes.avatarContainer}>
+										<Avatar
+											src={avatarPreview}
+											alt={user.name}
+											className={classes.avatar}
+										>
+											{user.name?.charAt(0).toUpperCase()}
+										</Avatar>
+										<input
+											accept="image/*"
+											className={classes.avatarInput}
+											id="avatar-upload"
+											type="file"
+											onChange={handleAvatarChange}
+										/>
+										<label htmlFor="avatar-upload">
+											<IconButton
+												color="primary"
+												component="span"
+												className={classes.avatarButton}
+											>
+												<PhotoCameraIcon />
+											</IconButton>
+										</label>
+										{avatarFile && (
+											<Button
+												size="small"
+												variant="outlined"
+												color="primary"
+												onClick={handleUploadAvatar}
+											>
+												Salvar Foto
+											</Button>
+										)}
+									</div>
+								)}
+								<div className={classes.multFieldLine}>
+									<Field
+										as={TextField}
+										label={i18n.t("userModal.form.name")}
+										autoFocus
+										name="name"
+										error={touched.name && Boolean(errors.name)}
+										helperText={touched.name && errors.name}
+										variant="outlined"
+										margin="dense"
+										fullWidth
+									/>
+									<Field
+										as={TextField}
+										label={i18n.t("userModal.form.password")}
+										type="password"
+										name="password"
+										error={touched.password && Boolean(errors.password)}
+										helperText={touched.password && errors.password}
+										variant="outlined"
+										margin="dense"
+										fullWidth
+									/>
+								</div>
+								<div className={classes.multFieldLine}>
+									<Field
+										as={TextField}
+										label={i18n.t("userModal.form.email")}
+										name="email"
+										error={touched.email && Boolean(errors.email)}
+										helperText={touched.email && errors.email}
+										variant="outlined"
+										margin="dense"
+										fullWidth
+									/>
+									<FormControl
+										variant="outlined"
+										className={classes.formControl}
+										margin="dense"
+									>
+										<Can
+											role={loggedInUser.profile}
+											perform="user-modal:editProfile"
+											yes={() => (
+												<>
+													<InputLabel id="profile-selection-input-label">
+														{i18n.t("userModal.form.profile")}
+													</InputLabel>
+
+													<Field
+														as={Select}
+														label={i18n.t("userModal.form.profile")}
+														name="profile"
+														labelId="profile-selection-label"
+														id="profile-selection"
+														required
+													>
+														<MenuItem value="admin">Admin</MenuItem>
+														<MenuItem value="user">User</MenuItem>
+													</Field>
+												</>
+											)}
+										/>
+									</FormControl>
+									{hasLanchonetes && (
+										<FormControl variant="outlined" className={classes.formControl} margin="dense" fullWidth>
+											<InputLabel id="defaultRoute-label">Página inicial (após login)</InputLabel>
+											<Field
+												as={Select}
+												label="Página inicial (após login)"
+												name="defaultRoute"
+												labelId="defaultRoute-label"
+												id="defaultRoute-select"
+											>
+												{lanchoneteDefaultRouteOptions.map((option) => (
+													<MenuItem key={option.value} value={option.value}>
+														{option.label}
+													</MenuItem>
+												))}
+											</Field>
+										</FormControl>
+									)}
+								</div>
+								{loggedInUser.profile === "admin" && values.profile === "user" && (
+									<UserPagePermissionsEditor
+										profile={values.profile}
+										pageAccess={pageAccess}
+										onChange={setPageAccess}
+										targetUserSuper={Boolean(user.super)}
+										moduleFlags={moduleFlags}
+										modulesLoading={modulesLoading}
+									/>
+								)}
+								<Can
+									role={loggedInUser.profile}
+									perform="user-modal:editQueues"
+									yes={() => (
+										<QueueSelect
+											selectedQueueIds={selectedQueueIds}
+											onChange={values => setSelectedQueueIds(values)}
+										/>
+									)}
+								/>
+								<Can
+									role={loggedInUser.profile}
+									perform="user-modal:editProfile"
+									yes={() => (
+										<FormControl variant="outlined" margin="dense" className={classes.maxWidth} fullWidth>
+											<InputLabel>
+												{i18n.t("userModal.form.whatsapp")}
+											</InputLabel>
+											<Field
+												as={Select}
+												value={whatsappId}
+												onChange={(e) => setWhatsappId(e.target.value)}
+												label={i18n.t("userModal.form.whatsapp")}
+
+											>
+												<MenuItem value={''}>&nbsp;</MenuItem>
+												{whatsApps.map((whatsapp) => (
+													<MenuItem key={whatsapp.id} value={whatsapp.id}>{whatsapp.name}</MenuItem>
+												))}
+											</Field>
+										</FormControl>
+									)}
+								/>
+								
+								
+								
+								<div className={classes.divider}>
+									<span className={classes.dividerText}>
+										{i18n.t("userModal.labels.liberations")}
+									</span>
+								</div>
+								
+								<Can
+									role={loggedInUser.profile}
+									perform="user-modal:editProfile"
+									yes={() => (!loading &&
+										<div className={classes.textField}>
+											<FormControl
+												variant="outlined"
+												className={classes.maxWidth}
+												margin="dense"
+												fullWidth
+											>
+												<>
+													<InputLabel id="profile-selection-input-label">
+														{i18n.t("userModal.form.allTicket")}
+													</InputLabel>
+
+													<Field
+														as={Select}
+														label={i18n.t("allTicket.form.viewTags")}
+														name="allTicket"
+														labelId="allTicket-selection-label"
+														id="allTicket-selection"
+														required
+													>
+														<MenuItem value="enabled">{i18n.t("userModal.form.allTicketEnabled")}</MenuItem>
+														<MenuItem value="desabled">{i18n.t("userModal.form.allTicketDesabled")}</MenuItem>
+													</Field>
+												</>
+											</FormControl>
+										</div>
+
+									)}
+								/>
+
+								{userId && (
+									<>
+										<UserAvailabilitySettings userId={userId} />
+										<div className={classes.contactsSection}>
+											<Divider style={{ marginTop: 16, marginBottom: 16 }} />
+											<Typography variant="subtitle2" gutterBottom>
+												Contatos Vinculados ({userContacts.length})
+											</Typography>
+										{loadingContacts ? (
+											<div className={classes.noContacts}>
+												<CircularProgress size={24} />
+											</div>
+										) : userContacts.length > 0 ? (
+											<List className={classes.contactsList} dense>
+												{userContacts.map((contact) => (
+													<ListItem key={contact.id} className={classes.contactItem}>
+														<ListItemAvatar>
+															<Avatar
+																src={contact.profilePicUrl}
+																alt={contact.name}
+															>
+																{contact.name?.charAt(0).toUpperCase()}
+															</Avatar>
+														</ListItemAvatar>
+														<ListItemText
+															primary={contact.name}
+															secondary={
+																<>
+																	{contact.number && (
+																		<span style={{ display: "flex", alignItems: "center", marginRight: 8 }}>
+																			<PhoneIcon fontSize="small" style={{ marginRight: 4 }} />
+																			{contact.number}
+																		</span>
+																	)}
+																	{contact.email && (
+																		<span style={{ display: "flex", alignItems: "center" }}>
+																			<EmailIcon fontSize="small" style={{ marginRight: 4 }} />
+																			{contact.email}
+																		</span>
+																	)}
+																</>
+															}
+														/>
+													</ListItem>
+												))}
+											</List>
+										) : (
+											<div className={classes.noContacts}>
+												<Typography variant="body2">
+													Nenhum contato vinculado a este usuário
+												</Typography>
+											</div>
+										)}
+									</div>
+									</>
+								)}
+								
+							</DialogContent>
+							<DialogActions>
+								<Button
+									onClick={handleClose}
+									color="secondary"
+									disabled={isSubmitting}
+									variant="outlined"
+								>
+									{i18n.t("userModal.buttons.cancel")}
+								</Button>
+								<Button
+									type="submit"
+									color="primary"
+									disabled={isSubmitting}
+									variant="contained"
+									className={classes.btnWrapper}
+								>
+									{userId
+										? `${i18n.t("userModal.buttons.okEdit")}`
+										: `${i18n.t("userModal.buttons.okAdd")}`}
+									{isSubmitting && (
+										<CircularProgress
+											size={24}
+											className={classes.buttonProgress}
+										/>
+									)}
+								</Button>
+							</DialogActions>
+						</Form>
+					)}
+				</Formik>
+			</Dialog>
+		</div>
+	);
+};
+
+export default UserModal;

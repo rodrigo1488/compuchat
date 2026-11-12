@@ -1,0 +1,2233 @@
+import React, { useState, useEffect, useMemo } from "react";
+import { useHistory } from "react-router-dom";
+import { makeStyles, useTheme } from "@material-ui/core/styles";
+import {
+  Box,
+  Typography,
+  Paper,
+  Button,
+  Card,
+  CardContent,
+  CircularProgress,
+  TextField,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Grid,
+  Tabs,
+  Tab,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  InputAdornment,
+  useMediaQuery,
+  Badge,
+} from "@material-ui/core";
+import SearchIcon from "@material-ui/icons/Search";
+import AddIcon from "@material-ui/icons/Add";
+import RemoveIcon from "@material-ui/icons/Remove";
+import AddCircleIcon from "@material-ui/icons/AddCircle";
+import EventSeatIcon from "@material-ui/icons/EventSeat";
+import PersonIcon from "@material-ui/icons/Person";
+import ShoppingCartIcon from "@material-ui/icons/ShoppingCart";
+import { toast } from "react-toastify";
+import Autocomplete, { createFilterOptions } from "@material-ui/lab/Autocomplete";
+import MainContainer from "../../components/MainContainer";
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
+import useCompanyModules from "../../hooks/useCompanyModules";
+import useAuth from "../../hooks/useAuth.js";
+import { useContext } from "react";
+import { SocketContext } from "../../context/Socket/SocketContext";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import ContactModal from "../../components/ContactModal";
+import LiberarMesaModal from "../../components/LiberarMesaModal";
+import TrocarNomeMesaDialog from "../../components/TrocarNomeMesaDialog";
+import OrderNotificationPopup from "../../components/OrderNotificationPopup";
+import { formatMesaComandaTitle } from "../../helpers/mesaDisplayLabel";
+import {
+  filterProductsByMenuCatalog,
+  findOptionByVariationLabel as findHalfOptionByLabel,
+  getFlavorProductsForHalfAndHalf as listHalfAndHalfFlavors,
+  productMatchesHalfAndHalfVariation as matchHalfVariation,
+} from "../../utils/menuProductHelpers";
+import {
+  normalizeMesaSearch,
+  getOcupanteNome,
+  mesaMatchesSearch,
+} from "../../helpers/mesaSearch";
+import {
+  getMobileDialogProps,
+  restoreBodyScrollLock,
+} from "../../helpers/mobileDialogProps";
+
+const filter = createFilterOptions({ trim: true });
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    padding: theme.spacing(2),
+    maxWidth: 960,
+    margin: "0 auto",
+    paddingBottom: 24,
+    [theme.breakpoints.down("xs")]: {
+      padding: theme.spacing(1),
+      paddingBottom: theme.spacing(3),
+      maxWidth: "100%",
+    },
+  },
+  headerRow: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginBottom: theme.spacing(2),
+    gap: 8,
+    [theme.breakpoints.down("xs")]: {
+      flexDirection: "column",
+      alignItems: "stretch",
+      gap: theme.spacing(1),
+    },
+  },
+  headerFormControl: {
+    minWidth: 140,
+    [theme.breakpoints.down("xs")]: {
+      width: "100%",
+      minWidth: 0,
+    },
+  },
+  mesaSearchField: {
+    flex: 1,
+    minWidth: 220,
+    [theme.breakpoints.down("xs")]: {
+      width: "100%",
+      minWidth: 0,
+    },
+  },
+  searchHint: {
+    width: "100%",
+    fontSize: "0.75rem",
+    color: theme.palette.text.secondary,
+    marginTop: -theme.spacing(1),
+    marginBottom: theme.spacing(1),
+  },
+  mesaGrid: {
+    marginTop: theme.spacing(2),
+    [theme.breakpoints.down("xs")]: {
+      marginTop: theme.spacing(1),
+    },
+  },
+  mesaCard: {
+    height: "100%",
+    display: "flex",
+    flexDirection: "column",
+    borderRadius: 12,
+    border: `2px solid ${theme.palette.divider}`,
+    transition: "all 0.2s ease",
+    "&:hover": {
+      boxShadow: theme.shadows[4],
+    },
+  },
+  mesaCardLivre: {
+    borderLeftColor: "#22C55E",
+    borderLeftWidth: 4,
+  },
+  mesaCardOcupada: {
+    borderLeftColor: "#F59E0B",
+    borderLeftWidth: 4,
+  },
+  mesaCardContent: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    padding: theme.spacing(2),
+  },
+  mesaNumber: {
+    fontWeight: 700,
+    fontSize: "1.25rem",
+    marginBottom: theme.spacing(0.5),
+  },
+  mesaStatus: {
+    fontSize: "0.8rem",
+    marginBottom: theme.spacing(1),
+  },
+  mesaCliente: {
+    marginTop: theme.spacing(0.5),
+    marginBottom: theme.spacing(1.5),
+    padding: theme.spacing(0.75, 1),
+    borderRadius: 8,
+    backgroundColor: theme.palette.type === "dark"
+      ? "rgba(255,255,255,0.08)"
+      : "rgba(15,23,42,0.05)",
+    border: `1px solid ${theme.palette.divider}`,
+  },
+  mesaClienteLabel: {
+    fontSize: "0.65rem",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    color: theme.palette.text.secondary,
+    marginBottom: 2,
+  },
+  mesaClienteNome: {
+    fontSize: "0.95rem",
+    fontWeight: 800,
+    lineHeight: 1.25,
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    color: theme.palette.text.primary,
+  },
+  productCard: {
+    marginBottom: theme.spacing(1),
+  },
+  quantityControl: {
+    display: "flex",
+    alignItems: "center",
+    gap: theme.spacing(0.5),
+  },
+  orderDialogContent: {
+    maxHeight: "60vh",
+    overflowY: "auto",
+    paddingTop: 8,
+    [theme.breakpoints.down("xs")]: {
+      maxHeight: "none",
+      paddingLeft: theme.spacing(1.5),
+      paddingRight: theme.spacing(1.5),
+    },
+  },
+  orderTabs: {
+    borderBottom: `1px solid ${theme.palette.divider}`,
+    marginBottom: theme.spacing(2),
+    minHeight: 40,
+    [theme.breakpoints.down("xs")]: {
+      marginBottom: theme.spacing(1.5),
+    },
+  },
+  orderTabPanel: {
+    paddingTop: theme.spacing(1),
+  },
+  summaryRow: {
+    marginTop: 0,
+    paddingTop: theme.spacing(2),
+    paddingBottom: theme.spacing(2),
+    borderTop: `1px solid ${theme.palette.divider}`,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: theme.spacing(1),
+    backgroundColor: theme.palette.background.paper,
+    [theme.breakpoints.down("xs")]: {
+      position: "sticky",
+      bottom: 0,
+      zIndex: 2,
+      paddingBottom: `calc(${theme.spacing(2)}px + env(safe-area-inset-bottom))`,
+    },
+  },
+  orderLineRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: theme.spacing(1, 0),
+    borderBottom: `1px solid ${theme.palette.divider}`,
+  },
+  halfFixedCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 12,
+    border: `1px solid ${theme.palette.divider}`,
+    backgroundColor: theme.palette.type === "dark" ? "rgba(255,255,255,0.04)" : "#f8fafc",
+  },
+  halfFixedImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    objectFit: "cover",
+    backgroundColor: theme.palette.action.hover,
+    flexShrink: 0,
+  },
+  halfFlavorList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginTop: 8,
+    maxHeight: 320,
+    overflowY: "auto",
+    paddingRight: 2,
+  },
+  halfFlavorCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: 10,
+    borderRadius: 12,
+    border: `2px solid ${theme.palette.divider}`,
+    backgroundColor: theme.palette.background.paper,
+    cursor: "pointer",
+    textAlign: "left",
+    width: "100%",
+    font: "inherit",
+    color: "inherit",
+    appearance: "none",
+    WebkitAppearance: "none",
+    transition: "border-color 0.15s, box-shadow 0.15s, background-color 0.15s",
+    "&:hover": {
+      boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+    },
+  },
+  halfFlavorCardSelected: {
+    borderColor: theme.palette.primary.main,
+    backgroundColor: theme.palette.type === "dark" ? "rgba(37,99,235,0.15)" : "#eff6ff",
+    boxShadow: `0 0 0 1px ${theme.palette.primary.main}`,
+  },
+  halfFlavorImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    objectFit: "cover",
+    backgroundColor: theme.palette.action.hover,
+    flexShrink: 0,
+  },
+  halfFlavorName: {
+    fontWeight: 600,
+    fontSize: "0.95rem",
+    lineHeight: 1.25,
+  },
+  halfFlavorMeta: {
+    fontSize: "0.8rem",
+    color: theme.palette.text.secondary,
+    marginTop: 2,
+  },
+  halfFlavorPrice: {
+    fontWeight: 700,
+    fontSize: "0.95rem",
+    marginTop: 4,
+  },
+}));
+
+const Garcom = () => {
+  const classes = useStyles();
+  const history = useHistory();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down("xs"));
+  const { user } = useAuth();
+  const { user: authUser } = useContext(AuthContext);
+  const socketManager = useContext(SocketContext);
+  const { hasLanchonetes, loading: modulesLoading } = useCompanyModules();
+  const [mesas, setMesas] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [form, setForm] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [pendingOrders, setPendingOrders] = useState([]); // Pedidos pendentes (orderStatus: "novo")
+  const [notificationOrder, setNotificationOrder] = useState(null); // Pedido para mostrar no popup
+  const [notificationOpen, setNotificationOpen] = useState(false);
+
+  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [mesaParaPedido, setMesaParaPedido] = useState(null);
+  const [contactParaPedido, setContactParaPedido] = useState(null);
+  const [orderLines, setOrderLines] = useState([]);
+  const [orderDialogTab, setOrderDialogTab] = useState(0);
+  const [variablePriceDialogOpen, setVariablePriceDialogOpen] = useState(false);
+  const [variablePriceProduct, setVariablePriceProduct] = useState(null);
+  const [variablePriceQty, setVariablePriceQty] = useState(1);
+  const [variablePriceUnit, setVariablePriceUnit] = useState("");
+
+  const [clienteDialogOpen, setClienteDialogOpen] = useState(false);
+  const [mesaParaOcupar, setMesaParaOcupar] = useState(null);
+  const [liberarModalOpen, setLiberarModalOpen] = useState(false);
+  const [mesaParaLiberar, setMesaParaLiberar] = useState(null);
+  const [trocarNomeOpen, setTrocarNomeOpen] = useState(false);
+  const [mesaTrocarNome, setMesaTrocarNome] = useState(null);
+  const [contacts, setContacts] = useState([]);
+  const [searchContact, setSearchContact] = useState("");
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [semTelefone, setSemTelefone] = useState(false);
+  const [nomeSemTelefone, setNomeSemTelefone] = useState("");
+  const [keywordDialogOpen, setKeywordDialogOpen] = useState(false);
+  const [occupationKeyword, setOccupationKeyword] = useState("");
+  const [pendingMesaConfirmation, setPendingMesaConfirmation] = useState(null);
+
+  const [contactModalOpen, setContactModalOpen] = useState(false);
+  const [newContactInitial, setNewContactInitial] = useState({});
+
+  const [halfAndHalfItems, setHalfAndHalfItems] = useState([]);
+  const [halfAndHalfModalOpen, setHalfAndHalfModalOpen] = useState(false);
+  const [halfAndHalfModalProduct, setHalfAndHalfModalProduct] = useState(null);
+  const [halfAndHalfModalHalf1, setHalfAndHalfModalHalf1] = useState("");
+  const [halfAndHalfModalHalf2, setHalfAndHalfModalHalf2] = useState("");
+  const [halfAndHalfModalQty, setHalfAndHalfModalQty] = useState(1);
+  /** Para produtos com variações: productId -> variationOptionId selecionado */
+  const [selectedVariationOption, setSelectedVariationOption] = useState({});
+  /** Variação selecionada do produto base quando abre o modal meio a meio */
+  const [halfAndHalfModalBaseVariation, setHalfAndHalfModalBaseVariation] = useState(null);
+
+  const [mesaStatusFilter, setMesaStatusFilter] = useState("");
+  const [mesaSearchQuery, setMesaSearchQuery] = useState("");
+  const [orderProductSearch, setOrderProductSearch] = useState("");
+
+  const [addOnModalOpen, setAddOnModalOpen] = useState(false);
+  const [addOnModalProduct, setAddOnModalProduct] = useState(null);
+  const [addOnModalLineIndex, setAddOnModalLineIndex] = useState(null);
+  const [addOnModalSelectedAddons, setAddOnModalSelectedAddons] = useState([]);
+  const [addOnModalPendingQuantity, setAddOnModalPendingQuantity] = useState(1);
+  /** null = linha normal; -1 = novo meio a meio; >=0 = editar halfAndHalfItems[index] */
+  const [addOnModalHalfIndex, setAddOnModalHalfIndex] = useState(null);
+  const [addOnModalHalfPending, setAddOnModalHalfPending] = useState(null);
+
+  const anyGarcomModalOpen =
+    orderDialogOpen ||
+    clienteDialogOpen ||
+    variablePriceDialogOpen ||
+    addOnModalOpen ||
+    halfAndHalfModalOpen ||
+    keywordDialogOpen ||
+    liberarModalOpen ||
+    trocarNomeOpen ||
+    contactModalOpen ||
+    notificationOpen;
+
+  useEffect(() => {
+    if (!anyGarcomModalOpen) {
+      restoreBodyScrollLock();
+    }
+  }, [anyGarcomModalOpen]);
+
+  useEffect(() => {
+    if (!hasLanchonetes && !modulesLoading) {
+      history.push("/dashboard");
+    }
+  }, [hasLanchonetes, modulesLoading, history]);
+
+  useEffect(() => {
+    if (!hasLanchonetes) return;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const [mesasRes, formsRes] = await Promise.all([
+          api.get("/mesas"),
+          api.get("/forms?formType=cardapio"),
+        ]);
+        setMesas(Array.isArray(mesasRes.data) ? mesasRes.data : []);
+        const forms = formsRes.data?.forms || [];
+        const firstForm = forms[0];
+        setForm(firstForm || null);
+        if (firstForm?.publicId) {
+          const { data } = await api.get(`/public/forms/${firstForm.publicId}/products`);
+          setProducts(filterProductsByMenuCatalog(data.products || [], firstForm.settings));
+        }
+      } catch (err) {
+        toastError(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [hasLanchonetes]);
+
+  // Ao abrir o dialog de pedido, carregar o formulário vinculado à mesa (não o primeiro da lista)
+  useEffect(() => {
+    if (!orderDialogOpen || !mesaParaPedido) return;
+    let cancelled = false;
+    const loadFormForMesa = async () => {
+      try {
+        let formToUse = null;
+        const mesaFormId = mesaParaPedido.formId ?? mesaParaPedido.form?.id;
+        const mesaFormPublicId = mesaParaPedido.form?.publicId;
+        if (mesaFormPublicId) {
+          const { data: formsData } = await api.get("/forms?formType=cardapio");
+          const forms = formsData?.forms || [];
+          formToUse = forms.find((f) => f.publicId === mesaFormPublicId) || forms.find((f) => f.id === mesaFormId) || null;
+        }
+        if (!formToUse && mesaFormId) {
+          const { data: formsData } = await api.get("/forms?formType=cardapio");
+          const forms = formsData?.forms || [];
+          formToUse = forms.find((f) => f.id === mesaFormId) || null;
+        }
+        if (!formToUse) {
+          const { data: defaultData } = await api.get("/mesas/default-cardapio-form");
+          if (cancelled || !defaultData?.publicId) return;
+          const { data: formsData } = await api.get("/forms?formType=cardapio");
+          const forms = formsData?.forms || [];
+          formToUse = forms.find((f) => f.publicId === defaultData.publicId) || forms.find((f) => f.id === defaultData.formId) || forms[0] || null;
+        }
+        if (cancelled || !formToUse) return;
+        setForm(formToUse);
+        if (formToUse.publicId) {
+          const { data } = await api.get(`/public/forms/${formToUse.publicId}/products`);
+          if (!cancelled) setProducts(filterProductsByMenuCatalog(data.products || [], formToUse.settings));
+        }
+      } catch (err) {
+        if (!cancelled) toastError(err);
+      }
+    };
+    loadFormForMesa();
+    return () => { cancelled = true; };
+  }, [orderDialogOpen, mesaParaPedido?.id, mesaParaPedido?.formId, mesaParaPedido?.form?.publicId]);
+
+  useEffect(() => {
+    const companyId = user?.companyId;
+    const socket = companyId ? socketManager?.getSocket?.(companyId) : null;
+    if (!socket) return;
+    const handler = (data) => {
+      if (data.action === "create" || data.action === "update" || data.action === "ocupar" || data.action === "liberar") {
+        const mesa = data.mesa;
+        setMesas((prev) => {
+          const idx = prev.findIndex((m) => m.id === mesa.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = mesa;
+            return next;
+          }
+          return [mesa, ...prev];
+        });
+      }
+      if (data.action === "delete") {
+        setMesas((prev) => prev.filter((m) => m.id !== data.mesaId));
+      }
+      if (data.action === "bulkCreate") {
+        setMesas((prev) => [...(data.mesas || []), ...prev]);
+      }
+    };
+    socket.on(`company-${companyId}-mesa`, handler);
+    return () => socket.off(`company-${companyId}-mesa`, handler);
+  }, [socketManager, user?.companyId]);
+
+  // Listener para novos pedidos pendentes
+  useEffect(() => {
+    const companyId = authUser?.companyId || user?.companyId;
+    const socket = companyId ? socketManager?.getSocket?.(companyId) : null;
+    if (!socket) return;
+    
+    const handleFormResponse = (data) => {
+      if (data.action === "create" && data.response) {
+        const response = data.response;
+        const formType = response.form?.settings?.formType || response.metadata?.formType;
+        const orderStatus = response.orderStatus || response.metadata?.orderStatus;
+        
+        // Filtrar apenas pedidos de cardápio com status "novo"
+        if (formType === "cardapio" && orderStatus === "novo") {
+          setPendingOrders((prev) => {
+            // Evitar duplicatas
+            const exists = prev.some((o) => o.id === response.id);
+            if (exists) return prev;
+            return [...prev, response];
+          });
+          
+          // Mostrar popup de notificação
+          setNotificationOrder(response);
+          setNotificationOpen(true);
+        }
+      } else if (data.action === "update" && data.response) {
+        const response = data.response;
+        const orderStatus = response.orderStatus || response.metadata?.orderStatus;
+        
+        // Se pedido foi atualizado e não está mais pendente, remover da lista
+        if (orderStatus !== "novo") {
+          setPendingOrders((prev) => prev.filter((o) => o.id !== response.id));
+        }
+      }
+    };
+    
+    socket.on(`company-${companyId}-formResponse`, handleFormResponse);
+    
+    return () => {
+      socket.off(`company-${companyId}-formResponse`, handleFormResponse);
+    };
+  }, [socketManager, authUser?.companyId, user?.companyId]);
+
+  useEffect(() => {
+    if (!clienteDialogOpen || searchContact.length < 2) {
+      setContacts([]);
+      return;
+    }
+    setLoadingContacts(true);
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await api.get("/contacts", { params: { searchParam: searchContact } });
+        setContacts(data.contacts || []);
+      } catch (err) {
+        toastError(err);
+      } finally {
+        setLoadingContacts(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [clienteDialogOpen, searchContact]);
+
+  const hasAddonsToShow = (product) => {
+    const g = product?.addOnGroup;
+    if (!g) return false;
+    const subsWithItems = (g.subgroups || []).filter((sg) => (sg.items || []).length > 0);
+    const rootItems = g.items || [];
+    return subsWithItems.length > 0 || rootItems.length > 0;
+  };
+
+  /** Variação efetiva: estado explícito ou primeira opção (padrão do Select). */
+  const getProductVariationOptionId = (productOrId) => {
+    const product =
+      typeof productOrId === "object" && productOrId !== null
+        ? productOrId
+        : products.find((p) => p.id === productOrId);
+    if (!product?.variations?.length) return null;
+    const explicit = selectedVariationOption[product.id];
+    if (explicit != null) return explicit;
+    return product.variations[0]?.options?.[0]?.id ?? null;
+  };
+
+  const getOrderLineCount = (productId) => {
+    const product = products.find((p) => p.id === productId);
+    const selectedOptionId = getProductVariationOptionId(product);
+    
+    return orderLines
+      .filter((l) => {
+        if (selectedOptionId) {
+          return l.productId === productId && l.optionId === selectedOptionId;
+        }
+        return l.productId === productId && l.optionId == null;
+      })
+      .reduce((a, l) => a + l.quantity, 0);
+  };
+
+  const handleQuantityChange = (productId, delta, product) => {
+    const p = product || products.find((x) => x.id === productId);
+    
+    // Se o produto tem variações, verificar se uma variação foi selecionada
+    if (delta === 1 && p?.variations && p.variations.length > 0) {
+      const selectedOptionId = getProductVariationOptionId(p);
+      if (!selectedOptionId) {
+        toast.error("Selecione uma variação de preço primeiro");
+        return;
+      }
+    }
+    
+    if (delta === 1 && p?.variablePrice && (!p?.variations || p.variations.length === 0)) {
+      setVariablePriceProduct(p);
+      setVariablePriceQty(1);
+      setVariablePriceUnit(Number(p?.value) ?? 0);
+      setVariablePriceDialogOpen(true);
+      return;
+    }
+
+    if (delta === 1 && p && hasAddonsToShow(p)) {
+      setAddOnModalProduct(p);
+      setAddOnModalLineIndex(null);
+      setAddOnModalHalfIndex(null);
+      setAddOnModalHalfPending(null);
+      setAddOnModalPendingQuantity(1);
+      setAddOnModalSelectedAddons([]);
+      setAddOnModalOpen(true);
+      return;
+    }
+    
+    // Obter optionId se houver variação selecionada
+    const optionId = getProductVariationOptionId(p);
+    
+    setOrderLines((prev) => {
+      if (delta === 1) {
+        // Para produtos com variações, usar optionId na chave
+        const key = optionId ? `${productId}_${optionId}` : productId;
+        const idx = prev.findIndex((l) => {
+          if (optionId) {
+            return l.productId === productId && l.optionId === optionId;
+          }
+          return l.productId === productId && l.productValue == null && l.optionId == null;
+        });
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
+          return next;
+        }
+        return [...prev, { productId, quantity: 1, optionId }];
+      }
+      const rev = prev.map((l, i) => ({ l, i })).filter((x) => {
+        if (optionId) {
+          return x.l.productId === productId && x.l.optionId === optionId;
+        }
+        return x.l.productId === productId && x.l.optionId == null;
+      });
+      const last = rev[rev.length - 1];
+      if (!last) return prev;
+      const idx = last.i;
+      const next = [...prev];
+      next[idx] = { ...next[idx], quantity: next[idx].quantity - 1 };
+      if (next[idx].quantity <= 0) next.splice(idx, 1);
+      return next;
+    });
+  };
+
+  const handleAddVariablePriceLine = () => {
+    const qty = Math.max(1, parseInt(variablePriceQty, 10) || 1);
+    const unit = parseFloat(String(variablePriceUnit).replace(",", "."));
+    if (isNaN(unit) || unit < 0) {
+      toast.error("Informe um valor unitário válido (maior ou igual a zero).");
+      return;
+    }
+    setOrderLines((prev) => [
+      ...prev,
+      {
+        productId: variablePriceProduct.id,
+        quantity: qty,
+        productValue: unit,
+      },
+    ]);
+    setVariablePriceDialogOpen(false);
+    setVariablePriceProduct(null);
+  };
+
+  const handleRemoveOrderLine = (lineIndex) => {
+    setOrderLines((prev) => prev.filter((_, i) => i !== lineIndex));
+  };
+
+  const openAddOnModalForLine = (lineIndex) => {
+    const line = orderLines[lineIndex];
+    const p = products.find((x) => x.id === line.productId);
+    if (!p || !hasAddonsToShow(p)) return;
+    setAddOnModalProduct(p);
+    setAddOnModalLineIndex(lineIndex);
+    setAddOnModalHalfIndex(null);
+    setAddOnModalHalfPending(null);
+    setAddOnModalPendingQuantity(line.quantity);
+    setAddOnModalSelectedAddons(Array.isArray(line.addons) ? line.addons.map((a) => ({ ...a, quantity: a.quantity ?? 1 })) : []);
+    setAddOnModalOpen(true);
+  };
+
+  const openAddOnModalForHalfEdit = (index) => {
+    const item = halfAndHalfItems[index];
+    if (!item) return;
+    const base = products.find((p) => p.id === item.baseProductId);
+    if (!base || !hasAddonsToShow(base)) return;
+    setAddOnModalProduct(base);
+    setAddOnModalLineIndex(null);
+    setAddOnModalHalfIndex(index);
+    setAddOnModalHalfPending(null);
+    setAddOnModalPendingQuantity(item.quantity || 1);
+    setAddOnModalSelectedAddons(Array.isArray(item.addons) ? item.addons.map((a) => ({ ...a, quantity: a.quantity ?? 1 })) : []);
+    setAddOnModalOpen(true);
+  };
+
+  const getAddonQuantityInModal = (addOnItemId) => addOnModalSelectedAddons.find((a) => a.addOnItemId === addOnItemId)?.quantity ?? 0;
+  const setAddonQuantityInModal = (item, quantity) => {
+    const { addOnItemId, label, value } = item;
+    if (quantity <= 0) {
+      setAddOnModalSelectedAddons((prev) => prev.filter((a) => a.addOnItemId !== addOnItemId));
+      return;
+    }
+    setAddOnModalSelectedAddons((prev) => {
+      const idx = prev.findIndex((a) => a.addOnItemId === addOnItemId);
+      const entry = { addOnItemId, label, value: Number(value) || 0, quantity };
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = entry;
+        return next;
+      }
+      return [...prev, entry];
+    });
+  };
+  const toggleAddonInModal = (item) => {
+    const current = getAddonQuantityInModal(item.addOnItemId);
+    setAddonQuantityInModal(item, current + 1);
+  };
+
+  const confirmAddOnModal = () => {
+    const addonsWithQty = (addOnModalSelectedAddons || []).filter((a) => (a.quantity ?? 1) > 0);
+
+    if (addOnModalHalfIndex === -1 && addOnModalHalfPending) {
+      setHalfAndHalfItems((prev) => [
+        ...prev,
+        {
+          ...addOnModalHalfPending,
+          quantity: Math.max(1, parseInt(addOnModalPendingQuantity, 10) || 1),
+          addons: addonsWithQty,
+        },
+      ]);
+    } else if (addOnModalHalfIndex != null && addOnModalHalfIndex >= 0) {
+      setHalfAndHalfItems((prev) =>
+        prev.map((item, i) =>
+          i === addOnModalHalfIndex
+            ? {
+                ...item,
+                quantity: Math.max(1, parseInt(addOnModalPendingQuantity, 10) || item.quantity || 1),
+                addons: addonsWithQty,
+              }
+            : item
+        )
+      );
+    } else if (addOnModalLineIndex === null) {
+      if (!addOnModalProduct) return;
+      const optionId = getProductVariationOptionId(addOnModalProduct);
+      setOrderLines((prev) => [...prev, { productId: addOnModalProduct.id, quantity: addOnModalPendingQuantity, optionId, addons: addonsWithQty }]);
+    } else {
+      setOrderLines((prev) => {
+        const next = [...prev];
+        if (next[addOnModalLineIndex]) next[addOnModalLineIndex] = { ...next[addOnModalLineIndex], addons: addonsWithQty };
+        return next;
+      });
+    }
+    setAddOnModalOpen(false);
+    setAddOnModalProduct(null);
+    setAddOnModalLineIndex(null);
+    setAddOnModalSelectedAddons([]);
+    setAddOnModalPendingQuantity(1);
+    setAddOnModalHalfIndex(null);
+    setAddOnModalHalfPending(null);
+  };
+
+  const closeAddOnModal = () => {
+    setAddOnModalOpen(false);
+    setAddOnModalProduct(null);
+    setAddOnModalLineIndex(null);
+    setAddOnModalSelectedAddons([]);
+    setAddOnModalPendingQuantity(1);
+    setAddOnModalHalfIndex(null);
+    setAddOnModalHalfPending(null);
+  };
+
+  const findOptionByVariationLabel = findHalfOptionByLabel;
+  const productMatchesHalfAndHalfVariation = matchHalfVariation;
+  const getFlavorProductsForHalfAndHalf = (
+    baseProduct,
+    baseVariationLabel = null,
+    { excludeProductId = null } = {}
+  ) => listHalfAndHalfFlavors(products, baseProduct, baseVariationLabel, { excludeProductId });
+
+  const computeHalfAndHalfUnitValue = (base, half1, half2, half1OptionId = null, half2OptionId = null) => {
+    if (!base || !half1 || !half2) return 0;
+    const rule = base.halfAndHalfPriceRule || "max";
+    
+    // Obter valores das variações se disponíveis, senão usar valor base
+    let v1 = parseFloat(half1.value) || 0;
+    let v2 = parseFloat(half2.value) || 0;
+    
+    // Se há optionIds, usar os valores das variações
+    if (half1OptionId && half1.variations && half1.variations.length > 0) {
+      const firstVariation = half1.variations[0];
+      const option = firstVariation?.options?.find((o) => o.id === half1OptionId);
+      if (option) v1 = parseFloat(option.value) || 0;
+    }
+    
+    if (half2OptionId && half2.variations && half2.variations.length > 0) {
+      const firstVariation = half2.variations[0];
+      const option = firstVariation?.options?.find((o) => o.id === half2OptionId);
+      if (option) v2 = parseFloat(option.value) || 0;
+    }
+    
+    if (rule === "max") return Math.max(v1, v2);
+    if (rule === "fixed") {
+      // Para fixed, usar a variação selecionada do produto base se disponível
+      if (base.variations && base.variations.length > 0) {
+        const baseOptionId = getProductVariationOptionId(base);
+        if (baseOptionId) {
+          const firstVariation = base.variations[0];
+          const option = firstVariation?.options?.find((o) => o.id === baseOptionId);
+          if (option) return parseFloat(option.value) || 0;
+        }
+      }
+      return parseFloat(base.value) || 0;
+    }
+    if (rule === "average") return (v1 + v2) / 2;
+    return Math.max(v1, v2);
+  };
+
+  const openHalfAndHalfModal = (product) => {
+    setHalfAndHalfModalProduct(product);
+    setHalfAndHalfModalHalf1(String(product.id));
+    setHalfAndHalfModalHalf2("");
+    setHalfAndHalfModalQty(1);
+    
+    // Capturar a variação selecionada do produto base (fallback: primeira opção)
+    let baseVariationLabel = null;
+    if (product.variations && product.variations.length > 0) {
+      const selectedOptionId = getProductVariationOptionId(product);
+      if (selectedOptionId) {
+        const firstVariation = product.variations[0];
+        const option = firstVariation?.options?.find((o) => o.id === selectedOptionId);
+        if (option) {
+          baseVariationLabel = option.label;
+        }
+      }
+      if (!baseVariationLabel) {
+        const firstVariation = product.variations[0];
+        if (firstVariation?.options?.length > 0) {
+          baseVariationLabel = firstVariation.options[0].label;
+        }
+      }
+    }
+    setHalfAndHalfModalBaseVariation(baseVariationLabel);
+    
+    setHalfAndHalfModalOpen(true);
+  };
+
+  const addHalfAndHalfToCart = () => {
+    if (!halfAndHalfModalProduct || !halfAndHalfModalHalf2) {
+      toast.error("Selecione o segundo sabor");
+      return;
+    }
+    
+    const half1ProductId = halfAndHalfModalProduct.id;
+    const half2ProductId = parseInt(halfAndHalfModalHalf2, 10);
+
+    if (!half2ProductId || half1ProductId === half2ProductId) {
+      toast.error("Selecione um segundo sabor diferente");
+      return;
+    }
+    
+    const half1Product = products.find((p) => p.id === half1ProductId);
+    const half2Product = products.find((p) => p.id === half2ProductId);
+
+    if (
+      halfAndHalfModalBaseVariation &&
+      !productMatchesHalfAndHalfVariation(
+        half2Product,
+        halfAndHalfModalBaseVariation,
+        halfAndHalfModalProduct.variations?.[0]?.name || null
+      )
+    ) {
+      toast.error("O segundo sabor precisa ter a mesma variação (ex.: mesmo tamanho)");
+      return;
+    }
+
+    const half1Option = findOptionByVariationLabel(half1Product, halfAndHalfModalBaseVariation);
+    const half2Option = findOptionByVariationLabel(half2Product, halfAndHalfModalBaseVariation);
+    
+    const qty = Math.max(1, parseInt(halfAndHalfModalQty, 10) || 1);
+    const baseProduct =
+      products.find((p) => p.id === halfAndHalfModalProduct.id) || halfAndHalfModalProduct;
+    const newItem = {
+      baseProductId: baseProduct.id,
+      half1ProductId,
+      half2ProductId,
+      half1OptionId: half1Option?.id || null,
+      half2OptionId: half2Option?.id || null,
+      quantity: qty,
+      addons: [],
+    };
+
+    const addonSourceProduct =
+      [baseProduct, half1Product, half2Product].find((p) => hasAddonsToShow(p)) || null;
+
+    setHalfAndHalfModalOpen(false);
+    setHalfAndHalfModalBaseVariation(null);
+    setHalfAndHalfModalHalf2("");
+
+    if (addonSourceProduct) {
+      setAddOnModalHalfPending(newItem);
+      setAddOnModalHalfIndex(-1);
+      setAddOnModalProduct(addonSourceProduct);
+      setAddOnModalLineIndex(null);
+      setAddOnModalPendingQuantity(qty);
+      setAddOnModalSelectedAddons([]);
+      window.setTimeout(() => {
+        setHalfAndHalfModalProduct(null);
+        setAddOnModalOpen(true);
+      }, 150);
+      return;
+    }
+
+    setHalfAndHalfModalProduct(null);
+    setHalfAndHalfItems((prev) => [...prev, newItem]);
+  };
+
+  const removeHalfAndHalfItem = (index) => {
+    setHalfAndHalfItems((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const getTotalItems = () =>
+    orderLines.reduce((a, l) => a + l.quantity, 0) + halfAndHalfItems.reduce((a, i) => a + i.quantity, 0);
+
+  const calculateTotal = () => {
+    let total = orderLines.reduce((acc, line) => {
+      const p = products.find((x) => x.id === line.productId);
+      let unit = line.productValue != null ? Number(line.productValue) || 0 : (Number(p?.value) || 0);
+      
+      // Se há optionId, usar o valor da variação
+      if (line.optionId && p?.variations && p.variations.length > 0) {
+        const firstVariation = p.variations[0];
+        const option = firstVariation?.options?.find((o) => o.id === line.optionId);
+        if (option) {
+          unit = parseFloat(option.value) || 0;
+        }
+      }
+      
+      return acc + line.quantity * unit;
+    }, 0);
+    halfAndHalfItems.forEach((item) => {
+      const base = products.find((p) => p.id === item.baseProductId);
+      const half1 = products.find((p) => p.id === item.half1ProductId);
+      const half2 = products.find((p) => p.id === item.half2ProductId);
+      const unit = computeHalfAndHalfUnitValue(base, half1, half2, item.half1OptionId, item.half2OptionId);
+      const addonsTotal = (item.addons || []).reduce(
+        (sum, a) => sum + (Number(a.value) || 0) * (a.quantity ?? 1),
+        0
+      );
+      total += (unit + addonsTotal) * item.quantity;
+    });
+    return total;
+  };
+
+  const handleContactCreated = (contact) => {
+    setSelectedContact(contact);
+    setContactModalOpen(false);
+    setNewContactInitial({});
+  };
+
+  const handleLiberar = (mesa) => {
+    setMesaParaLiberar(mesa);
+    setLiberarModalOpen(true);
+  };
+
+  const abrirTrocarNome = (mesa) => {
+    if (mesa?.status !== "ocupada" || !mesa?.contactId) {
+      toast.error("Só é possível trocar o nome em mesa ocupada.");
+      return;
+    }
+    setMesaTrocarNome(mesa);
+    setTrocarNomeOpen(true);
+  };
+
+  const handleTrocarNomeSuccess = (mesaAtualizada) => {
+    if (!mesaAtualizada?.id) return;
+    setMesas((prev) =>
+      prev.map((m) => (m.id === mesaAtualizada.id ? { ...m, ...mesaAtualizada } : m))
+    );
+    if (mesaParaPedido?.id === mesaAtualizada.id) {
+      setMesaParaPedido((prev) => (prev ? { ...prev, ...mesaAtualizada } : prev));
+      if (mesaAtualizada.contact) {
+        setContactParaPedido(mesaAtualizada.contact);
+      }
+    }
+  };
+
+  const fetchMesasForLiberar = async () => {
+    try {
+      const mesasRes = await api.get("/mesas");
+      setMesas(Array.isArray(mesasRes.data) ? mesasRes.data : []);
+    } catch (err) {
+      toastError(err);
+    }
+  };
+
+  const abrirPedido = (mesa) => {
+    if (mesa.status === "ocupada") {
+      const contact = mesa.contact || (mesa.contactId ? { id: mesa.contactId, name: "Cliente", number: "" } : null);
+      if (!contact) {
+        toast.error("Mesa ocupada sem contato vinculado. Libere e ocupe novamente.");
+        return;
+      }
+      setMesaParaPedido(mesa);
+      setContactParaPedido(contact);
+      setOrderLines([]);
+      setHalfAndHalfItems([]);
+      setOrderDialogTab(0);
+      setOrderDialogOpen(true);
+    } else {
+      setMesaParaOcupar(mesa);
+      setSelectedContact(null);
+      setSearchContact("");
+      setSemTelefone(false);
+      setNomeSemTelefone("");
+      setClienteDialogOpen(true);
+    }
+  };
+
+  const handleConfirmarCliente = async () => {
+    if (!semTelefone && !selectedContact) {
+      toast.error("Selecione ou crie o cliente");
+      return;
+    }
+    const nomeSemTel = String(nomeSemTelefone || "").trim();
+    if (semTelefone && !nomeSemTel) {
+      toast.error("Informe o nome para ocupar sem telefone.");
+      return;
+    }
+    if (!mesaParaOcupar) return;
+    setSubmitting(true);
+    try {
+      let ticket = null;
+      if (!semTelefone) {
+        const { data } = await api.post("/tickets", {
+          contactId: selectedContact.id,
+          status: "open",
+          reuseOpenTicket: true,
+        });
+        ticket = data;
+      }
+      const { data: occupyResult } = await api.put(`/mesas/${mesaParaOcupar.id}/ocupar`, {
+        ...(semTelefone ? { contactName: nomeSemTel } : { contactId: selectedContact.id }),
+        ticketId: ticket?.id,
+        transferir: true,
+      });
+      if (occupyResult?.status === "pending_confirmation") {
+        setPendingMesaConfirmation({
+          mesaId: mesaParaOcupar.id,
+          contact: semTelefone
+            ? { id: null, name: nomeSemTel, number: "" }
+            : selectedContact,
+        });
+        setOccupationKeyword("");
+        setKeywordDialogOpen(true);
+        setClienteDialogOpen(false);
+        setMesaParaOcupar(null);
+        setSelectedContact(null);
+        setSemTelefone(false);
+        setNomeSemTelefone("");
+        toast.info("Palavra-chave enviada para o WhatsApp do cliente. Confirme para liberar a mesa.");
+      } else {
+        toast.success("Mesa ocupada");
+        setClienteDialogOpen(false);
+        const mesasRes = await api.get("/mesas");
+        setMesas(Array.isArray(mesasRes.data) ? mesasRes.data : []);
+        let mesaAtualizada = (mesasRes.data || []).find((m) => m.id === mesaParaOcupar.id);
+        if (!mesaAtualizada?.contact) {
+          const { data: mesaDetail } = await api.get(`/mesas/${mesaParaOcupar.id}`);
+          mesaAtualizada = mesaDetail;
+        }
+        if (!mesaAtualizada) {
+          mesaAtualizada = {
+            ...mesaParaOcupar,
+            status: "ocupada",
+            contactId: occupyResult?.contactId ?? (semTelefone ? null : selectedContact?.id),
+            ticketId: ticket?.id,
+          };
+        }
+        const contactForPedido =
+          mesaAtualizada.contact ||
+          (semTelefone ? { id: occupyResult?.contactId, name: nomeSemTel, number: "" } : selectedContact);
+        setMesaParaOcupar(null);
+        setSelectedContact(null);
+        setSemTelefone(false);
+        setNomeSemTelefone("");
+        restoreBodyScrollLock();
+        // Aguarda o modal de cliente fechar antes de abrir o de pedido (evita travamento no Android)
+        requestAnimationFrame(() => {
+          setMesaParaPedido(mesaAtualizada);
+          setContactParaPedido(contactForPedido);
+          setOrderLines([]);
+          setHalfAndHalfItems([]);
+          setOrderDialogTab(0);
+          setOrderDialogOpen(true);
+        });
+      }
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleConfirmarPalavraChave = async () => {
+    const keyword = String(occupationKeyword || "").trim();
+    if (!pendingMesaConfirmation?.mesaId || !keyword) {
+      toast.error("Informe a palavra-chave recebida pelo cliente.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { data } = await api.post(`/mesas/${pendingMesaConfirmation.mesaId}/confirmar-ocupacao`, {
+        keyword,
+      });
+      const mesaConfirmada = data?.mesa;
+      toast.success("Ocupação confirmada");
+
+      const mesaIdConfirmada = pendingMesaConfirmation.mesaId;
+      const contactConfirmado = pendingMesaConfirmation.contact || null;
+
+      setKeywordDialogOpen(false);
+      setOccupationKeyword("");
+      setPendingMesaConfirmation(null);
+
+      const mesasRes = await api.get("/mesas");
+      setMesas(Array.isArray(mesasRes.data) ? mesasRes.data : []);
+
+      const mesaConfirmadaFinal =
+        mesaConfirmada || (mesasRes.data || []).find((m) => m.id === mesaIdConfirmada) || null;
+
+      restoreBodyScrollLock();
+
+      requestAnimationFrame(() => {
+        setMesaParaPedido(mesaConfirmadaFinal);
+        setContactParaPedido(contactConfirmado);
+        setOrderLines([]);
+        setHalfAndHalfItems([]);
+        setOrderDialogTab(0);
+        setOrderDialogOpen(true);
+      });
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitOrder = async () => {
+    if (!form?.slug || !mesaParaPedido || !contactParaPedido) return;
+    if (getTotalItems() === 0) {
+      toast.error("Adicione itens ao pedido");
+      return;
+    }
+    for (const line of orderLines) {
+      const p = products.find((x) => x.id === line.productId);
+      // Se tem variações, verificar se uma foi selecionada
+      if (p?.variations && p.variations.length > 0) {
+        if (!line.optionId) {
+          toast.error(`Selecione uma variação para "${p.name}".`);
+          return;
+        }
+      } else if (p?.variablePrice && (line.productValue == null || Number(line.productValue) < 0)) {
+        toast.error(`Informe o valor para "${p.name}".`);
+        return;
+      }
+    }
+    setSubmitting(true);
+    try {
+      const normalMenuItems = orderLines.map((line) => {
+        const p = products.find((x) => x.id === line.productId);
+        let unit = line.productValue != null ? Number(line.productValue) || 0 : (Number(p?.value) || 0);
+        
+        // Se há optionId, usar o valor da variação
+        if (line.optionId && p?.variations && p.variations.length > 0) {
+          const firstVariation = p.variations[0];
+          const option = firstVariation?.options?.find((o) => o.id === line.optionId);
+          if (option) {
+            unit = parseFloat(option.value) || 0;
+          }
+        }
+        
+        const productName = line.optionId && p?.variations && p.variations.length > 0
+          ? (() => {
+              const firstVariation = p.variations[0];
+              const option = firstVariation?.options?.find((o) => o.id === line.optionId);
+              return option ? `${p?.name} - ${option.label}` : p?.name;
+            })()
+          : p?.name;
+        
+        const addons = Array.isArray(line.addons) && line.addons.length > 0
+          ? line.addons.flatMap((a) => Array((a.quantity ?? 1) * line.quantity).fill(null).map(() => ({ addOnItemId: a.addOnItemId, label: a.label, value: a.value })))
+          : undefined;
+        return {
+          productId: line.productId,
+          quantity: line.quantity,
+          productName: productName || p?.name,
+          productValue: unit,
+          optionId: line.optionId || null,
+          ...(line.optionId ? { variationOptionId: line.optionId } : {}),
+          ...(line.optionId && p?.variations?.[0]?.options?.find((o) => o.id === line.optionId)?.idUniplus
+            ? { idUniplus: p.variations[0].options.find((o) => o.id === line.optionId).idUniplus }
+            : p?.idUniplus ? { idUniplus: p.idUniplus } : {}),
+          grupo: p?.grupo || "Outros",
+          ...(addons && addons.length > 0 && { addons }),
+        };
+      });
+      const halfMenuItems = halfAndHalfItems.map((item) => {
+        const baseProduct = products.find((p) => p.id === item.baseProductId);
+        const baseOptionId = getProductVariationOptionId(baseProduct);
+        const addons = item.addons || [];
+        const addonsExpanded = addons.length > 0
+          ? addons.flatMap((a) =>
+              Array((a.quantity ?? 1) * (item.quantity || 1))
+                .fill(null)
+                .map(() => ({ addOnItemId: a.addOnItemId, label: a.label, value: a.value }))
+            )
+          : undefined;
+        return {
+          type: "halfAndHalf",
+          productId: item.baseProductId,
+          quantity: item.quantity,
+          half1ProductId: item.half1ProductId,
+          half2ProductId: item.half2ProductId,
+          half1OptionId: item.half1OptionId || null,
+          half2OptionId: item.half2OptionId || null,
+          baseOptionId: baseOptionId,
+          ...(baseOptionId && baseProduct?.variations?.[0]?.options?.find((o) => o.id === baseOptionId)?.idUniplus
+            ? { idUniplus: baseProduct.variations[0].options.find((o) => o.id === baseOptionId).idUniplus }
+            : baseProduct?.idUniplus ? { idUniplus: baseProduct.idUniplus } : {}),
+          grupo: baseProduct?.grupo || "Outros",
+          ...(addonsExpanded && addonsExpanded.length > 0 && { addons: addonsExpanded }),
+        };
+      });
+      const menuItems = [...normalMenuItems, ...halfMenuItems];
+      const labelLower = (l) => (l || "").trim().toLowerCase();
+      const fields = form.fields || [];
+      const autoFields = fields.filter(
+        (f) => f.metadata?.autoFieldType === "name" || f.metadata?.autoFieldType === "phone"
+      ) || [];
+      const answers = [];
+      autoFields.forEach((f) => {
+        const val = f.metadata?.autoFieldType === "name"
+          ? (contactParaPedido?.name || "Cliente")
+          : f.metadata?.autoFieldType === "phone"
+          ? (contactParaPedido?.number || "")
+          : "";
+        answers.push({ fieldId: f.id, answer: f.metadata?.autoFieldType === "name" ? val : (contactParaPedido?.number || "") });
+      });
+      const nomeField = fields.find(
+        (f) => f.isRequired && (f.metadata?.autoFieldType === "name" || (labelLower(f.label).includes("nome") && !labelLower(f.label).includes("sobrenome")))
+      );
+      if (nomeField && !answers.some((a) => a.fieldId === nomeField.id)) {
+        answers.push({ fieldId: nomeField.id, answer: contactParaPedido?.name || "Cliente" });
+      }
+      const tipoPedidoField = (form.fields || []).find(
+        (f) => f.isRequired && labelLower(f.label).includes("tipo") && labelLower(f.label).includes("pedido")
+      );
+      if (tipoPedidoField && !answers.some((a) => a.fieldId === tipoPedidoField.id)) {
+        answers.push({ fieldId: tipoPedidoField.id, answer: "Mesa" });
+      }
+      const customerName = contactParaPedido?.name || "Cliente";
+      const clientOrderId = (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `ped-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const metadata = {
+        tableId: mesaParaPedido.id,
+        tableNumber: mesaParaPedido.number || mesaParaPedido.name,
+        mesaType: mesaParaPedido.type || "mesa",
+        orderType: "mesa",
+        garcomName: user?.name || "",
+        placedByGarcom: true,
+        customerName,
+        clientOrderId,
+      };
+      await api.post(`/public/forms/${form.publicId}/submit`, {
+        answers,
+        menuItems,
+        clientOrderId,
+        metadata,
+        responderName: customerName,
+        responderPhone: contactParaPedido?.number || "",
+      });
+      toast.success("Pedido enviado!");
+      setOrderLines([]);
+      setHalfAndHalfItems([]);
+      setOrderDialogOpen(false);
+      setMesaParaPedido(null);
+      setContactParaPedido(null);
+      restoreBodyScrollLock();
+      const mesasRes = await api.get("/mesas");
+      setMesas(Array.isArray(mesasRes.data) ? mesasRes.data : []);
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const groups = [...new Set(products.map((p) => p.grupo || "Outros"))].sort();
+
+  const mesaSearchNormalized = useMemo(
+    () => normalizeMesaSearch(mesaSearchQuery),
+    [mesaSearchQuery]
+  );
+
+  const filteredMesas = useMemo(
+    () =>
+      mesas.filter((m) => {
+        if (mesaStatusFilter === "ocupada" && m.status !== "ocupada") return false;
+        if (mesaStatusFilter === "livre" && m.status !== "livre") return false;
+        return mesaMatchesSearch(m, mesaSearchNormalized);
+      }),
+    [mesas, mesaStatusFilter, mesaSearchNormalized]
+  );
+
+  const handleMesaSearchKeyDown = (e) => {
+    if (e.key !== "Enter") return;
+    const raw = mesaSearchQuery?.trim();
+    if (!raw) return;
+    if (filteredMesas.length === 1) {
+      abrirPedido(filteredMesas[0]);
+      setMesaSearchQuery("");
+      return;
+    }
+    if (filteredMesas.length > 1) {
+      toast.info(`${filteredMesas.length} mesas/comandas encontradas. Refine a busca ou toque na desejada.`);
+    } else {
+      toast.error("Nenhuma mesa ou comanda encontrada para essa busca.");
+    }
+  };
+
+  const filterProductsBySearch = (list) => {
+    if (!orderProductSearch.trim()) return list;
+    const q = orderProductSearch.trim().toLowerCase();
+    return list.filter((p) => (p.name || "").toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q));
+  };
+
+  if (!hasLanchonetes && !modulesLoading) return null;
+
+  return (
+    <MainContainer>
+      <Box className={classes.root}>
+        {loading ? (
+          <Box display="flex" justifyContent="center" py={4}>
+            <CircularProgress />
+          </Box>
+        ) : mesas.length === 0 ? (
+          <Paper style={{ padding: 24, textAlign: "center" }}>
+            <Typography variant="body1" color="textSecondary" gutterBottom>
+              Nenhuma mesa cadastrada.
+            </Typography>
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={() => history.push("/lanchonetes?tab=3")}
+            >
+              Ir para Mesas
+            </Button>
+          </Paper>
+        ) : (
+          <>
+            <Box className={classes.headerRow}>
+              <Box display="flex" alignItems="center" gap={1} flex={1} minWidth={0}>
+                <Typography variant="body2" color="textSecondary">
+                  Clique em &quot;Fazer pedido&quot; na mesa. Se estiver livre, informe o cliente primeiro.
+                </Typography>
+                {pendingOrders.length > 0 && (
+                  <Badge badgeContent={pendingOrders.length} color="error">
+                    <ShoppingCartIcon color="action" />
+                  </Badge>
+                )}
+              </Box>
+              <TextField
+                className={classes.mesaSearchField}
+                size="small"
+                variant="outlined"
+                label="Mesa, comanda ou cliente"
+                placeholder="Número ou nome do ocupante"
+                value={mesaSearchQuery}
+                onChange={(e) => setMesaSearchQuery(e.target.value)}
+                onKeyDown={handleMesaSearchKeyDown}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" color="action" />
+                    </InputAdornment>
+                  ),
+                }}
+              />
+              <FormControl size="small" className={classes.headerFormControl}>
+                <InputLabel>Exibir mesas</InputLabel>
+                <Select
+                  value={mesaStatusFilter}
+                  onChange={(e) => setMesaStatusFilter(e.target.value)}
+                  label="Exibir mesas"
+                >
+                  <MenuItem value="">Todas</MenuItem>
+                  <MenuItem value="ocupada">Ocupadas</MenuItem>
+                  <MenuItem value="livre">Livres</MenuItem>
+                </Select>
+              </FormControl>
+            </Box>
+            {mesaSearchNormalized && (
+              <Typography className={classes.searchHint}>
+                {filteredMesas.length === 0
+                  ? "Nenhum resultado. Tente outro nome ou número."
+                  : `${filteredMesas.length} mesa(s)/comanda(s) encontrada(s)`}
+              </Typography>
+            )}
+            <Grid container spacing={2} className={classes.mesaGrid}>
+            {filteredMesas.length === 0 ? (
+              <Grid item xs={12}>
+                <Paper style={{ padding: 24, textAlign: "center" }}>
+                  <Typography color="textSecondary">
+                    {mesaSearchNormalized
+                      ? `Nenhum resultado para "${mesaSearchQuery.trim()}".`
+                      : "Nenhuma mesa encontrada com o filtro selecionado."}
+                  </Typography>
+                </Paper>
+              </Grid>
+            ) : filteredMesas.map((mesa) => (
+              <Grid item xs={12} sm={6} md={4} key={mesa.id}>
+                <Card
+                  className={`${classes.mesaCard} ${
+                    mesa.status === "ocupada" ? classes.mesaCardOcupada : classes.mesaCardLivre
+                  }`}
+                  variant="outlined"
+                >
+                  <CardContent className={classes.mesaCardContent}>
+                    <Typography className={classes.mesaNumber}>
+                      <EventSeatIcon style={{ fontSize: "1.2rem", verticalAlign: "middle", marginRight: 4 }} />
+                      {formatMesaComandaTitle(mesa)}
+                    </Typography>
+                    <Typography
+                      className={classes.mesaStatus}
+                      color={mesa.status === "ocupada" ? "secondary" : "primary"}
+                    >
+                      {mesa.status === "ocupada" ? "Ocupada" : "Livre"}
+                    </Typography>
+                    {mesa.status === "ocupada" && (getOcupanteNome(mesa) || mesa.contact?.number) && (
+                      <Box className={classes.mesaCliente}>
+                        <Typography className={classes.mesaClienteLabel}>Cliente</Typography>
+                        <Typography className={classes.mesaClienteNome} noWrap title={getOcupanteNome(mesa) || mesa.contact?.number}>
+                          <PersonIcon style={{ fontSize: "1rem", flexShrink: 0 }} />
+                          {getOcupanteNome(mesa) || mesa.contact?.number || "Cliente"}
+                        </Typography>
+                      </Box>
+                    )}
+                    <Box flex={1} />
+                    <Box display="flex" flexDirection="column" style={{ marginTop: 8 }}>
+                      <Button
+                        variant="contained"
+                        color="primary"
+                        fullWidth
+                        onClick={() => abrirPedido(mesa)}
+                      >
+                        Fazer pedido
+                      </Button>
+                      {mesa.status === "ocupada" && (
+                        <Button
+                          variant="outlined"
+                          color="primary"
+                          fullWidth
+                          onClick={(e) => { e.stopPropagation(); abrirTrocarNome(mesa); }}
+                          style={{ marginTop: 8 }}
+                        >
+                          Trocar nome
+                        </Button>
+                      )}
+                      {mesa.status === "ocupada" && (
+                        <Button
+                          variant="outlined"
+                          color="secondary"
+                          fullWidth
+                          onClick={(e) => { e.stopPropagation(); handleLiberar(mesa); }}
+                          style={{ marginTop: 8 }}
+                        >
+                          Liberar mesa
+                        </Button>
+                      )}
+                    </Box>
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
+            </Grid>
+          </>
+        )}
+      </Box>
+
+      <Dialog
+        open={orderDialogOpen}
+        onClose={() => {
+          if (!submitting) {
+            setOrderDialogOpen(false);
+            setMesaParaPedido(null);
+            setContactParaPedido(null);
+            setOrderLines([]);
+            setHalfAndHalfItems([]);
+            setOrderProductSearch("");
+            restoreBodyScrollLock();
+          }
+        }}
+        maxWidth="sm"
+        fullWidth
+        scroll="paper"
+        fullScreen={isXs}
+        {...getMobileDialogProps(isXs)}
+      >
+        <DialogTitle>
+          Pedido — {mesaParaPedido ? formatMesaComandaTitle(mesaParaPedido) : ""}
+          {(contactParaPedido || mesaParaPedido?.contact) && (
+            <Box display="flex" alignItems="center" flexWrap="wrap" style={{ gap: 8 }}>
+              <Typography variant="body2" color="textSecondary">
+                Cliente: {contactParaPedido?.name || mesaParaPedido?.contact?.name || "Cliente"}
+              </Typography>
+              <Button
+                size="small"
+                color="primary"
+                onClick={() => abrirTrocarNome(mesaParaPedido)}
+                style={{ textTransform: "none", padding: "2px 8px", minWidth: 0 }}
+              >
+                Trocar nome
+              </Button>
+            </Box>
+          )}
+        </DialogTitle>
+        <DialogContent className={classes.orderDialogContent}>
+          <TextField
+            size="small"
+            placeholder="Buscar produto..."
+            value={orderProductSearch}
+            onChange={(e) => setOrderProductSearch(e.target.value)}
+            variant="outlined"
+            fullWidth
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            }}
+            style={{ marginBottom: 12 }}
+          />
+          <Tabs
+            value={orderDialogTab}
+            onChange={(_, v) => setOrderDialogTab(v)}
+            variant="scrollable"
+            scrollButtons="auto"
+            className={classes.orderTabs}
+          >
+            {groups.map((grupo, idx) => (
+              <Tab key={grupo} label={grupo} id={`order-tab-${idx}`} aria-controls={`order-tabpanel-${idx}`} />
+            ))}
+          </Tabs>
+          {groups.map((grupo, idx) => (
+            <div
+              key={grupo}
+              role="tabpanel"
+              hidden={orderDialogTab !== idx}
+              id={`order-tabpanel-${idx}`}
+              aria-labelledby={`order-tab-${idx}`}
+              className={classes.orderTabPanel}
+            >
+              {orderDialogTab === idx && (
+                <Box>
+                  {filterProductsBySearch(products.filter((p) => (p.grupo || "Outros") === grupo))
+                    .map((product) => {
+                      const isHalfAndHalf = product.allowsHalfAndHalf === true;
+                    const hasVariations = product.variations && product.variations.length > 0;
+                    const firstVariation = hasVariations ? product.variations[0] : null;
+                    const selectedOptionId = hasVariations ? getProductVariationOptionId(product) : null;
+                    const displayPrice = hasVariations 
+                      ? (() => {
+                          const option = firstVariation?.options?.find((o) => o.id === selectedOptionId);
+                          return option ? parseFloat(option.value || 0) : parseFloat(product.value || 0);
+                        })()
+                      : (product.variablePrice ? null : parseFloat(product.value || 0));
+                      return (
+                        <Card key={product.id} className={classes.productCard} variant="outlined">
+                          <CardContent style={{ display: "flex", flexDirection: "column", padding: "12px 16px" }}>
+                            <Box display="flex" alignItems="center" justifyContent="space-between" marginBottom={hasVariations ? 1 : 0}>
+                              <Box>
+                                <Typography variant="body1">{product.name}</Typography>
+                                <Typography variant="body2" color="primary">
+                                  {product.variablePrice && !hasVariations
+                                    ? "Preço variável"
+                                    : displayPrice != null
+                                    ? `R$ ${displayPrice.toFixed(2).replace(".", ",")}`
+                                    : "Preço variável"}
+                                </Typography>
+                              </Box>
+                              <Box display="flex" alignItems="center" flexWrap="wrap">
+                                {isHalfAndHalf && (
+                                  <Button
+                                    variant="outlined"
+                                    color="primary"
+                                    size="small"
+                                    onClick={() => openHalfAndHalfModal(product)}
+                                    style={{ marginRight: 8 }}
+                                  >
+                                    Meio a meio
+                                  </Button>
+                                )}
+                                <Box className={classes.quantityControl}>
+                                  <IconButton size="small" onClick={() => handleQuantityChange(product.id, -1, product)}>
+                                    <RemoveIcon fontSize="small" />
+                                  </IconButton>
+                                  <Typography style={{ minWidth: 28, textAlign: "center", fontWeight: 600 }}>
+                                    {getOrderLineCount(product.id)}
+                                  </Typography>
+                                  <IconButton size="small" onClick={() => handleQuantityChange(product.id, 1, product)}>
+                                    <AddIcon fontSize="small" />
+                                  </IconButton>
+                                </Box>
+                              </Box>
+                            </Box>
+                            {hasVariations && firstVariation && (
+                              <FormControl variant="outlined" size="small" fullWidth style={{ marginTop: 8 }}>
+                                <InputLabel>{firstVariation.name}</InputLabel>
+                                <Select
+                                  value={selectedOptionId ?? ""}
+                                  onChange={(e) => setSelectedVariationOption((prev) => ({ ...prev, [product.id]: Number(e.target.value) }))}
+                                  label={firstVariation.name}
+                                >
+                                  {firstVariation.options.map((opt) => (
+                                    <MenuItem key={opt.id} value={opt.id}>
+                                      {opt.label} - R$ {parseFloat(opt.value || 0).toFixed(2).replace(".", ",")}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            )}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                </Box>
+              )}
+            </div>
+          ))}
+          {(orderLines.length > 0 || halfAndHalfItems.length > 0) && (
+            <Box px={2} pt={1} pb={0}>
+              <Typography variant="subtitle2" gutterBottom>
+                Itens do pedido
+              </Typography>
+              {orderLines.map((line, idx) => {
+                const p = products.find((x) => x.id === line.productId);
+                let unit = line.productValue != null ? Number(line.productValue) || 0 : (Number(p?.value) || 0);
+                
+                // Se há optionId, usar o valor da variação
+                if (line.optionId && p?.variations && p.variations.length > 0) {
+                  const firstVariation = p.variations[0];
+                  const option = firstVariation?.options?.find((o) => o.id === line.optionId);
+                  if (option) {
+                    unit = parseFloat(option.value) || 0;
+                  }
+                }
+                
+                const productName = line.optionId && p?.variations && p.variations.length > 0
+                  ? (() => {
+                      const firstVariation = p.variations[0];
+                      const option = firstVariation?.options?.find((o) => o.id === line.optionId);
+                      return option ? `${p?.name || "Produto"} - ${option.label}` : (p?.name || "Produto");
+                    })()
+                  : (p?.name || "Produto");
+                
+                const subtotalLine = line.quantity * unit;
+                const addonsTotal = (line.addons || []).reduce((s, a) => s + (Number(a.value) || 0) * (a.quantity ?? 1), 0);
+                const subtotal = (unit + addonsTotal) * line.quantity;
+                return (
+                  <Box key={`n-${idx}`} className={classes.orderLineRow}>
+                    <Box flex={1}>
+                      <Typography variant="body2">
+                        {productName} • {line.quantity}x R$ {(unit + addonsTotal).toFixed(2).replace(".", ",")} = R$ {subtotal.toFixed(2).replace(".", ",")}
+                      </Typography>
+                      {(line.addons || []).length > 0 && (
+                        <Typography variant="caption" color="textSecondary" display="block">
+                          Adicionais: {(line.addons || []).map((a) => ((a.quantity ?? 1) > 1 ? `${a.quantity}x ` : "") + `${a.label} (+ R$ ${Number(a.value || 0).toFixed(2).replace(".", ",")})`).join(", ")}
+                        </Typography>
+                      )}
+                      {p && hasAddonsToShow(p) && (
+                        <Button size="small" color="primary" onClick={() => openAddOnModalForLine(idx)} style={{ marginTop: 4 }}>
+                          {(line.addons || []).length > 0 ? "Alterar adicionais" : "Adicionais"}
+                        </Button>
+                      )}
+                    </Box>
+                    <IconButton size="small" onClick={() => handleRemoveOrderLine(idx)} aria-label="Remover item">
+                      <RemoveIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                );
+              })}
+              {halfAndHalfItems.length > 0 && (
+                <Box mt={1}>
+                  <Typography variant="caption" color="textSecondary" display="block" gutterBottom>
+                    Itens meio a meio
+                  </Typography>
+                  {halfAndHalfItems.map((item, idx) => {
+                    const base = products.find((p) => p.id === item.baseProductId);
+                    const h1 = products.find((p) => p.id === item.half1ProductId);
+                    const h2 = products.find((p) => p.id === item.half2ProductId);
+                    const unitVal = computeHalfAndHalfUnitValue(base, h1, h2, item.half1OptionId, item.half2OptionId);
+                    const addonsTotal = (item.addons || []).reduce(
+                      (sum, a) => sum + (Number(a.value) || 0) * (a.quantity ?? 1),
+                      0
+                    );
+                    const label = h1 && h2 ? `Meio a meio: ${h1.name} / ${h2.name}` : "Meio a meio";
+                    const addonLabels = (item.addons || [])
+                      .filter((a) => (a.quantity ?? 1) > 0)
+                      .map((a) => `${a.quantity > 1 ? `${a.quantity}x ` : ""}${a.label}`)
+                      .join(", ");
+                    return (
+                      <Box key={`h-${idx}`} className={classes.orderLineRow} display="flex" alignItems="flex-start" justifyContent="space-between">
+                        <Box>
+                          <Typography variant="body2">
+                            {item.quantity}x {label} — R$ {((unitVal + addonsTotal) * item.quantity).toFixed(2).replace(".", ",")}
+                          </Typography>
+                          {addonLabels && (
+                            <Typography variant="caption" color="textSecondary" display="block">
+                              + {addonLabels}
+                            </Typography>
+                          )}
+                          {base && hasAddonsToShow(base) && (
+                            <Button size="small" color="primary" onClick={() => openAddOnModalForHalfEdit(idx)} style={{ marginTop: 4 }}>
+                              {addonLabels ? "Alterar adicionais" : "Adicionais"}
+                            </Button>
+                          )}
+                        </Box>
+                        <IconButton size="small" onClick={() => removeHalfAndHalfItem(idx)} aria-label="Remover meio a meio">
+                          <RemoveIcon fontSize="small" />
+                        </IconButton>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions className={classes.summaryRow}>
+          <Typography variant="h6">
+            Total: R$ {(Number(calculateTotal()) || 0).toFixed(2).replace(".", ",")} • {getTotalItems()} itens
+          </Typography>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={submitOrder}
+            disabled={getTotalItems() === 0 || submitting}
+          >
+            {submitting ? <CircularProgress size={24} color="inherit" /> : "Enviar pedido"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={variablePriceDialogOpen}
+        onClose={() => setVariablePriceDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        fullScreen={isXs}
+        {...getMobileDialogProps(isXs)}
+      >
+        <DialogTitle>Valor unitário</DialogTitle>
+        <DialogContent>
+          {variablePriceProduct && (
+            <>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
+                {variablePriceProduct.name} — informe a quantidade e o valor unitário (ex.: refeição por kg).
+              </Typography>
+              <TextField
+                label="Quantidade"
+                type="number"
+                inputProps={{ min: 1 }}
+                value={variablePriceQty}
+                onChange={(e) => setVariablePriceQty(e.target.value)}
+                variant="outlined"
+                margin="dense"
+                fullWidth
+                style={{ marginBottom: 12 }}
+              />
+              <TextField
+                label="Valor unitário (R$)"
+                type="number"
+                inputProps={{ step: "0.01", min: "0" }}
+                value={variablePriceUnit}
+                onChange={(e) => setVariablePriceUnit(e.target.value)}
+                variant="outlined"
+                margin="dense"
+                fullWidth
+              />
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setVariablePriceDialogOpen(false)} color="secondary">
+            Cancelar
+          </Button>
+          <Button onClick={handleAddVariablePriceLine} color="primary" variant="contained">
+            Adicionar
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={addOnModalOpen} onClose={closeAddOnModal} maxWidth="sm" fullWidth {...getMobileDialogProps(isXs)}>
+        <DialogTitle>Adicionais — {addOnModalProduct?.name}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
+            {addOnModalLineIndex === null ? "Selecione a quantidade do item e os adicionais (ex.: 2 ovos)." : "Altere os adicionais deste item."}
+            {addOnModalLineIndex === null && " Quantidade: "}
+            {addOnModalLineIndex === null && (
+              <Box component="span" display="flex" alignItems="center" style={{ display: "inline-flex", marginTop: 8 }}>
+                <IconButton size="small" onClick={() => setAddOnModalPendingQuantity((q) => Math.max(1, q - 1))} aria-label="Menos">
+                  <RemoveIcon fontSize="small" />
+                </IconButton>
+                <Typography variant="body2" style={{ minWidth: 24, textAlign: "center" }}>{addOnModalPendingQuantity}</Typography>
+                <IconButton size="small" onClick={() => setAddOnModalPendingQuantity((q) => q + 1)} aria-label="Mais">
+                  <AddIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            )}
+          </Typography>
+          {addOnModalProduct?.addOnGroup && (
+            <>
+              {(addOnModalProduct.addOnGroup.subgroups || []).filter((sg) => (sg.items || []).length > 0).map((sg) => (
+                <Box key={sg.id} mb={2}>
+                  <Typography variant="subtitle2" style={{ fontWeight: 600, marginBottom: 8 }}>{sg.name}</Typography>
+                  {(sg.items || []).map((it) => {
+                    const qty = getAddonQuantityInModal(it.id);
+                    return (
+                      <Box key={it.id} display="flex" alignItems="center" justifyContent="space-between" style={{ marginBottom: 8 }}>
+                        <Typography variant="body2">{it.label} + R$ {Number(it.value || 0).toFixed(2).replace(".", ",")}</Typography>
+                        <Box display="flex" alignItems="center">
+                          <IconButton size="small" onClick={() => setAddonQuantityInModal({ addOnItemId: it.id, label: it.label, value: it.value }, qty - 1)} disabled={qty <= 0} aria-label="Menos">
+                            <RemoveIcon fontSize="small" />
+                          </IconButton>
+                          <Typography variant="body2" style={{ minWidth: 24, textAlign: "center" }}>{qty}</Typography>
+                          <IconButton size="small" onClick={() => toggleAddonInModal({ addOnItemId: it.id, label: it.label, value: it.value })} aria-label="Mais">
+                            <AddIcon fontSize="small" />
+                          </IconButton>
+                        </Box>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              ))}
+              {(addOnModalProduct.addOnGroup.items || []).length > 0 && (addOnModalProduct.addOnGroup.items || []).map((it) => {
+                const qty = getAddonQuantityInModal(it.id);
+                return (
+                  <Box key={it.id} display="flex" alignItems="center" justifyContent="space-between" style={{ marginBottom: 8 }}>
+                    <Typography variant="body2">{it.label} + R$ {Number(it.value || 0).toFixed(2).replace(".", ",")}</Typography>
+                    <Box display="flex" alignItems="center">
+                      <IconButton size="small" onClick={() => setAddonQuantityInModal({ addOnItemId: it.id, label: it.label, value: it.value }, qty - 1)} disabled={qty <= 0} aria-label="Menos">
+                        <RemoveIcon fontSize="small" />
+                      </IconButton>
+                      <Typography variant="body2" style={{ minWidth: 24, textAlign: "center" }}>{qty}</Typography>
+                      <IconButton size="small" onClick={() => toggleAddonInModal({ addOnItemId: it.id, label: it.label, value: it.value })} aria-label="Mais">
+                        <AddIcon fontSize="small" />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                );
+              })}
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeAddOnModal} color="secondary">Cancelar</Button>
+          <Button onClick={confirmAddOnModal} color="primary" variant="contained">Confirmar</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={halfAndHalfModalOpen}
+        onClose={() => setHalfAndHalfModalOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        fullScreen={isXs}
+        {...getMobileDialogProps(isXs)}
+      >
+        <DialogTitle>Meio a meio - {halfAndHalfModalProduct?.name}</DialogTitle>
+        <DialogContent>
+          {halfAndHalfModalProduct && (() => {
+            const half1Option = findOptionByVariationLabel(
+              halfAndHalfModalProduct,
+              halfAndHalfModalBaseVariation
+            );
+            const half1Price = half1Option
+              ? parseFloat(half1Option.value || 0)
+              : parseFloat(halfAndHalfModalProduct.value || 0);
+            const secondFlavors = getFlavorProductsForHalfAndHalf(
+              halfAndHalfModalProduct,
+              halfAndHalfModalBaseVariation,
+              { excludeProductId: halfAndHalfModalProduct.id }
+            );
+            return (
+              <>
+                <Typography variant="subtitle2" style={{ fontWeight: 700, marginTop: 4 }}>
+                  Metade 1
+                </Typography>
+                <Box className={classes.halfFixedCard}>
+                  {halfAndHalfModalProduct.imageUrl ? (
+                    <img
+                      src={halfAndHalfModalProduct.imageUrl}
+                      alt={halfAndHalfModalProduct.name}
+                      className={classes.halfFixedImage}
+                      onError={(e) => { e.target.style.display = "none"; }}
+                    />
+                  ) : (
+                    <Box className={classes.halfFixedImage} />
+                  )}
+                  <Box flex={1} minWidth={0}>
+                    <Typography className={classes.halfFlavorName}>
+                      {halfAndHalfModalProduct.name}
+                    </Typography>
+                    {halfAndHalfModalBaseVariation && (
+                      <Typography className={classes.halfFlavorMeta}>
+                        Variação {halfAndHalfModalBaseVariation}
+                      </Typography>
+                    )}
+                    <Typography className={classes.halfFlavorPrice}>
+                      R$ {half1Price.toFixed(2).replace(".", ",")}
+                    </Typography>
+                  </Box>
+                </Box>
+                <Typography variant="caption" color="textSecondary" display="block" style={{ marginTop: 6 }}>
+                  Sabor atual — escolha apenas o segundo sabor
+                </Typography>
+
+                <Typography variant="subtitle2" style={{ fontWeight: 700, marginTop: 16 }}>
+                  Metade 2 (segundo sabor)
+                </Typography>
+                {halfAndHalfModalBaseVariation && (
+                  <Typography variant="caption" color="textSecondary" display="block">
+                    Apenas sabores com variação “{halfAndHalfModalBaseVariation}”
+                  </Typography>
+                )}
+                {secondFlavors.length === 0 ? (
+                  <Typography color="error" variant="body2" style={{ marginTop: 12 }}>
+                    Nenhum outro sabor com a mesma variação neste grupo
+                  </Typography>
+                ) : (
+                  <Box className={classes.halfFlavorList}>
+                    {secondFlavors.map((p) => {
+                      const option = findOptionByVariationLabel(p, halfAndHalfModalBaseVariation);
+                      const displayPrice = option
+                        ? parseFloat(option.value || 0)
+                        : parseFloat(p.value || 0);
+                      const selected = halfAndHalfModalHalf2 === String(p.id);
+                      return (
+                        <Box
+                          key={p.id}
+                          component="button"
+                          type="button"
+                          className={`${classes.halfFlavorCard}${selected ? ` ${classes.halfFlavorCardSelected}` : ""}`}
+                          onClick={() => setHalfAndHalfModalHalf2(String(p.id))}
+                        >
+                          {p.imageUrl ? (
+                            <img
+                              src={p.imageUrl}
+                              alt={p.name}
+                              className={classes.halfFlavorImage}
+                              onError={(e) => { e.target.style.display = "none"; }}
+                            />
+                          ) : (
+                            <Box className={classes.halfFlavorImage} />
+                          )}
+                          <Box flex={1} minWidth={0}>
+                            <Typography className={classes.halfFlavorName}>{p.name}</Typography>
+                            {p.description && (
+                              <Typography className={classes.halfFlavorMeta} noWrap>
+                                {p.description}
+                              </Typography>
+                            )}
+                            <Typography className={classes.halfFlavorPrice}>
+                              R$ {displayPrice.toFixed(2).replace(".", ",")}
+                            </Typography>
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                )}
+
+                <TextField
+                  label="Quantidade"
+                  type="number"
+                  value={halfAndHalfModalQty}
+                  onChange={(e) => setHalfAndHalfModalQty(e.target.value)}
+                  inputProps={{ min: 1 }}
+                  variant="outlined"
+                  size="small"
+                  fullWidth
+                  style={{ marginTop: 16 }}
+                />
+              </>
+            );
+          })()}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setHalfAndHalfModalOpen(false)} color="secondary">
+            Cancelar
+          </Button>
+          <Button
+            onClick={addHalfAndHalfToCart}
+            color="primary"
+            variant="contained"
+            disabled={!halfAndHalfModalHalf2}
+          >
+            Adicionar
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={clienteDialogOpen}
+        onClose={() => {
+          if (!submitting) {
+            setClienteDialogOpen(false);
+            setMesaParaOcupar(null);
+            setSelectedContact(null);
+          }
+        }}
+        maxWidth="sm"
+        fullWidth
+        fullScreen={isXs}
+        {...getMobileDialogProps(isXs)}
+      >
+        <DialogTitle>Ocupar mesa {mesaParaOcupar?.number || mesaParaOcupar?.name} - Informe o cliente</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
+            Selecione ou crie o cliente para ocupar a mesa e em seguida fazer o pedido.
+          </Typography>
+          <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
+            <Typography variant="body2" color="textSecondary">
+              Modo de ocupação
+            </Typography>
+            <Button
+              size="small"
+              variant={semTelefone ? "contained" : "outlined"}
+              color="primary"
+              onClick={() => setSemTelefone((v) => !v)}
+              disabled={submitting}
+            >
+              {semTelefone ? "Sem telefone (ativo)" : "Ocupar sem telefone"}
+            </Button>
+          </Box>
+          {semTelefone ? (
+            <TextField
+              label="Nome do cliente"
+              variant="outlined"
+              fullWidth
+              value={nomeSemTelefone}
+              onChange={(e) => setNomeSemTelefone(e.target.value)}
+            />
+          ) : (
+            <>
+              <Autocomplete
+                options={contacts}
+                getOptionLabel={(opt) =>
+                  opt.isNew ? `Criar: ${opt.name}` : (opt.name ? `${opt.name} (${opt.number})` : opt.number || "")
+                }
+                value={selectedContact}
+                onChange={(_, val) => {
+                  if (val?.isNew) {
+                    setNewContactInitial({ name: val.name });
+                    setContactModalOpen(true);
+                  } else setSelectedContact(val);
+                }}
+                onInputChange={(_, v) => setSearchContact(v)}
+                loading={loadingContacts}
+                filterOptions={(opts, params) => {
+                  const f = filter(opts, params);
+                  if (params.inputValue?.trim() && searchContact.length >= 2) {
+                    f.push({ name: params.inputValue.trim(), number: "", isNew: true });
+                  }
+                  return f;
+                }}
+                renderInput={(params) => (
+                  <TextField {...params} label="Buscar ou criar contato" variant="outlined" fullWidth />
+                )}
+              />
+              <Button
+                size="small"
+                startIcon={<AddCircleIcon />}
+                onClick={() => {
+                  setNewContactInitial({});
+                  setContactModalOpen(true);
+                }}
+                style={{ marginTop: 8 }}
+              >
+                Novo contato
+              </Button>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setClienteDialogOpen(false);
+              setMesaParaOcupar(null);
+              setSelectedContact(null);
+              setSemTelefone(false);
+              setNomeSemTelefone("");
+            }}
+          >
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={handleConfirmarCliente}
+            disabled={(semTelefone ? !String(nomeSemTelefone || "").trim() : !selectedContact) || submitting}
+          >
+            {submitting ? <CircularProgress size={24} /> : "Ocupar mesa e fazer pedido"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={keywordDialogOpen}
+        onClose={() => {
+          if (!submitting) {
+            setKeywordDialogOpen(false);
+            setOccupationKeyword("");
+            setPendingMesaConfirmation(null);
+          }
+        }}
+        maxWidth="xs"
+        fullWidth
+        fullScreen={isXs}
+        {...getMobileDialogProps(isXs)}
+      >
+        <DialogTitle>Confirmar ocupação por palavra-chave</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="textSecondary" style={{ marginBottom: 12 }}>
+            Informe a palavra-chave enviada ao WhatsApp do cliente para efetivar a ocupação da mesa.
+          </Typography>
+          <TextField
+            label="Palavra-chave"
+            variant="outlined"
+            fullWidth
+            value={occupationKeyword}
+            onChange={(e) => setOccupationKeyword(e.target.value.toUpperCase())}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setKeywordDialogOpen(false);
+              setOccupationKeyword("");
+              setPendingMesaConfirmation(null);
+            }}
+            disabled={submitting}
+          >
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={handleConfirmarPalavraChave}
+            disabled={!String(occupationKeyword || "").trim() || submitting}
+          >
+            {submitting ? <CircularProgress size={24} /> : "Confirmar ocupação"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <ContactModal
+        open={contactModalOpen}
+        onClose={() => { setContactModalOpen(false); setNewContactInitial({}); }}
+        onSave={handleContactCreated}
+        initialValues={newContactInitial}
+      />
+
+      <LiberarMesaModal
+        open={liberarModalOpen}
+        mesa={mesaParaLiberar}
+        onClose={() => {
+          setLiberarModalOpen(false);
+          setMesaParaLiberar(null);
+        }}
+        onSuccess={fetchMesasForLiberar}
+      />
+
+      <TrocarNomeMesaDialog
+        open={trocarNomeOpen}
+        mesa={mesaTrocarNome}
+        onClose={() => {
+          setTrocarNomeOpen(false);
+          setMesaTrocarNome(null);
+        }}
+        onSuccess={handleTrocarNomeSuccess}
+      />
+
+      <OrderNotificationPopup
+        open={notificationOpen}
+        order={notificationOrder}
+        onView={() => {
+          setNotificationOpen(false);
+          // Redirecionar para página de pedidos ou abrir modal
+          history.push("/pedidos");
+        }}
+        onClose={() => {
+          setNotificationOpen(false);
+          setNotificationOrder(null);
+        }}
+      />
+    </MainContainer>
+  );
+};
+
+export default Garcom;

@@ -1,0 +1,900 @@
+import React, { useState, useEffect } from "react";
+import { useParams, useHistory, useLocation } from "react-router-dom";
+import { toast } from "react-toastify";
+import {
+  Box,
+  Button,
+  TextField,
+  Typography,
+  Paper,
+  makeStyles,
+  CircularProgress,
+  FormControl,
+  FormControlLabel,
+  Radio,
+  RadioGroup,
+  Checkbox,
+  InputLabel,
+  Select,
+  MenuItem,
+  FormHelperText,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  InputAdornment,
+} from "@material-ui/core";
+import { Rating, Alert } from "@material-ui/lab";
+
+import InputMask from "react-input-mask";
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
+import PublicMenuForm from "./PublicMenuForm";
+import PublicAgendamentoForm from "./PublicAgendamentoForm";
+import { isFieldVisible, pruneHiddenConditionalFields } from "../../utils/formUtils";
+import { getFormAppearanceStyles, FONT_IMPORTS } from "../../utils/formAppearanceStyles";
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    padding: theme.spacing(3),
+  },
+  container: {
+    width: "100%",
+    marginTop: theme.spacing(4),
+    marginBottom: theme.spacing(4),
+  },
+  formPaper: {},
+  header: {
+    textAlign: "center",
+    marginBottom: theme.spacing(4),
+  },
+  logo: {
+    maxWidth: 150,
+    maxHeight: 80,
+    marginBottom: theme.spacing(2),
+  },
+  title: {
+    fontWeight: 600,
+    marginBottom: theme.spacing(1),
+  },
+  description: {
+    color: theme.palette.text.secondary,
+    marginBottom: theme.spacing(3),
+  },
+  fieldContainer: {
+    marginBottom: theme.spacing(3),
+  },
+  fieldLabel: {
+    marginBottom: theme.spacing(1),
+    fontWeight: 500,
+    display: "flex",
+    alignItems: "center",
+  },
+  required: {
+    color: theme.palette.error.main,
+    marginLeft: theme.spacing(0.5),
+  },
+  helpText: {
+    fontSize: "0.875rem",
+    color: theme.palette.text.secondary,
+    marginTop: theme.spacing(0.5),
+    marginBottom: theme.spacing(1),
+  },
+  submitButton: {
+    marginTop: theme.spacing(3),
+    padding: theme.spacing(1.5),
+    fontSize: "1rem",
+    fontWeight: 600,
+  },
+  successMessage: {
+    padding: theme.spacing(3),
+    textAlign: "center",
+  },
+  loadingContainer: {
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    minHeight: "50vh",
+  },
+}));
+
+const PublicForm = () => {
+  const classes = useStyles();
+  const { publicId } = useParams();
+  const history = useHistory();
+  const location = useLocation();
+
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [errors, setErrors] = useState({});
+  const [submitted, setSubmitted] = useState(false);
+  const [quotationItems, setQuotationItems] = useState([]);
+
+  useEffect(() => {
+    loadForm();
+  }, [publicId]);
+
+  useEffect(() => {
+    const font = form?.settings?.appearance?.fontFamily;
+    if (font && font !== "inherit" && FONT_IMPORTS[font]) {
+      const link = document.createElement("link");
+      link.href = FONT_IMPORTS[font];
+      link.rel = "stylesheet";
+      document.head.appendChild(link);
+      return () => document.head.removeChild(link);
+    }
+  }, [form?.settings?.appearance?.fontFamily]);
+
+  const loadForm = async () => {
+    try {
+      const { data } = await api.get(`/public/forms/${publicId}`);
+      setForm(data);
+      
+      // Ler parâmetros da URL (para tracking via WhatsApp)
+      const searchParams = new URLSearchParams(location.search);
+      const urlName = searchParams.get("name") || searchParams.get("nome");
+      const urlPhone = searchParams.get("phone") || searchParams.get("telefone");
+      
+      // Initialize answers
+      const initialAnswers = {};
+      (data.fields || []).forEach((field) => {
+        // Preencher automaticamente se vier da URL
+        if (field.fieldType === "checkbox") {
+          initialAnswers[field.id] = [];
+        } else if (field.fieldType === "rating") {
+          initialAnswers[field.id] = 0;
+        } else {
+          // Preencher campos de nome e telefone se vierem na URL
+          if (urlName && field.metadata?.autoFieldType === "name") {
+            initialAnswers[field.id] = urlName;
+          } else if (urlPhone && field.metadata?.autoFieldType === "phone") {
+            initialAnswers[field.id] = urlPhone;
+          } else if (urlName && field.fieldType === "text" && field.label.toLowerCase().includes("nome")) {
+            initialAnswers[field.id] = urlName;
+          } else if (urlPhone && field.fieldType === "phone") {
+            initialAnswers[field.id] = urlPhone;
+          } else {
+            initialAnswers[field.id] = "";
+          }
+        }
+      });
+      setAnswers(initialAnswers);
+
+      // Se for formulário de cotação, inicializar quotationItems
+      if (data.settings?.formType === "quotation") {
+        const items = data.settings?.quotationItems || [];
+        if (items.length > 0) {
+          const initialQuotationItems = items.map((item) => ({
+            productName: item.productName || "",
+            quantity: item.quantity || 1,
+            unitValue: 0,
+            totalValue: 0,
+            observations: "",
+          }));
+          setQuotationItems(initialQuotationItems);
+        }
+      }
+    } catch (err) {
+      toastError(err);
+      setTimeout(() => {
+        history.push("/");
+      }, 3000);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFieldChange = (fieldId, value) => {
+    const sortedFields = (form.fields || []).sort((a, b) => a.order - b.order);
+    const nextAnswers = { ...answers, [fieldId]: value };
+    const pruned = pruneHiddenConditionalFields(sortedFields, nextAnswers, {});
+    setAnswers(pruned.answers);
+    setErrors((prevErrors) => {
+      const next = { ...prevErrors };
+      delete next[fieldId];
+      sortedFields.forEach((field) => {
+        if (field.hasConditional && !isFieldVisible(field, nextAnswers, sortedFields)) {
+          delete next[field.id];
+        }
+      });
+      return next;
+    });
+  };
+
+  // Função para normalizar telefone (remove o 5º dígito quando há 14 ou 13 dígitos com 9 duplicado)
+  const normalizePhone = (input) => {
+    const digits = String(input || "").replace(/\D/g, "");
+    if (!digits) return "";
+    // Se tem 14 dígitos e começa com 55, remover o 5º dígito (índice 4)
+    // Formato: 55 + DDD(2) + 9(duplicado) + número(9) = 14 dígitos
+    // Exemplo: 5534999999999 -> 553499999999 (remove o 5º dígito)
+    if (digits.startsWith("55") && digits.length === 14) {
+      return digits.slice(0, 4) + digits.slice(5);
+    }
+    // Se tem 13 dígitos, verificar se há um dígito extra após o DDD
+    // Números brasileiros válidos: 55 + DDD(2) + número(8 ou 9) = 12 ou 13 dígitos
+    // Se tiver 13 dígitos e o 5º dígito (após o DDD) for 9, pode ser um 9 duplicado.
+    // Remover o 5º dígito se o número resultante tiver 8 ou 9 dígitos válidos após o DDD.
+    if (digits.startsWith("55") && digits.length === 13) {
+      const numberAfterDdd = digits.slice(4); // Número após DDD (9 dígitos)
+      // Se o número após DDD tem 9 dígitos e o 5º dígito (índice 4) é 9,
+      // pode ser um 9 duplicado. Remover o 5º dígito.
+      if (numberAfterDdd.length === 9 && digits[4] === "9") {
+        const withoutFifth = digits.slice(0, 4) + digits.slice(5);
+        const numberAfterDddWithoutFifth = withoutFifth.slice(4);
+        // Se após remover ficar com 8 ou 9 dígitos válidos, usar esse formato
+        if (numberAfterDddWithoutFifth.length >= 8 && numberAfterDddWithoutFifth.length <= 9) {
+          return withoutFifth;
+        }
+      }
+    }
+    return digits;
+  };
+
+  // Validação de telefone (deve começar com 55 e ter pelo menos 12 caracteres)
+  // Aceita 12 dígitos (55 + DDD + 8) ou 13 dígitos (55 + DDD + 9) ou 14 dígitos (55 + DDD + 9 + 9)
+  const validatePhone = (phone) => {
+    if (!phone) return false;
+    const cleaned = phone.replace(/\D/g, "");
+    // Aceita 12, 13 ou 14 dígitos (14 será normalizado removendo o 9 duplicado)
+    return cleaned.startsWith("55") && cleaned.length >= 12 && cleaned.length <= 14;
+  };
+
+  // Validação de email
+  const validateEmail = (email) => {
+    if (!email) return false;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
+  const validateForm = () => {
+    const newErrors = {};
+    const sortedFields = (form.fields || []).sort((a, b) => a.order - b.order);
+    
+    sortedFields.forEach((field) => {
+      if (!isFieldVisible(field, answers, sortedFields)) return;
+      if (field.isRequired) {
+        const answer = answers[field.id];
+        if (
+          !answer ||
+          (Array.isArray(answer) && answer.length === 0) ||
+          (typeof answer === "string" && answer.trim() === "") ||
+          answer === 0
+        ) {
+          newErrors[field.id] = `${field.label} é obrigatório`;
+        } else {
+          // Validações específicas por tipo
+          if (field.fieldType === "phone" && !validatePhone(answer)) {
+            newErrors[field.id] = "Telefone inválido. Use o formato: 55 + DDD + número (ex: 5534999999999)";
+          } else if (field.fieldType === "email" && !validateEmail(answer)) {
+            newErrors[field.id] = "Email inválido";
+          }
+        }
+      } else {
+        // Validar formato mesmo se não for obrigatório
+        const answer = answers[field.id];
+        if (answer && typeof answer === "string" && answer.trim() !== "") {
+          if (field.fieldType === "phone" && !validatePhone(answer)) {
+            newErrors[field.id] = "Telefone inválido. Use o formato: 55 + DDD + número (ex: 5534999999999)";
+          } else if (field.fieldType === "email" && !validateEmail(answer)) {
+            newErrors[field.id] = "Email inválido";
+          }
+        }
+      }
+    });
+
+    // Validate quotation items if form is quotation type
+    if (form.settings?.formType === "quotation") {
+      if (!quotationItems || quotationItems.length === 0) {
+        newErrors["quotationItems"] = "É necessário adicionar pelo menos um item de cotação.";
+      } else {
+        quotationItems.forEach((item, index) => {
+          if (!item.productName || item.productName.trim() === "") {
+            newErrors[`quotationItem-${index}-productName`] = `Nome do produto no item ${index + 1} é obrigatório.`;
+          }
+          if (item.quantity <= 0) {
+            newErrors[`quotationItem-${index}-quantity`] = `Quantidade no item ${index + 1} deve ser maior que zero.`;
+          }
+        });
+      }
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleQuotationItemChange = (index, field, value) => {
+    const newItems = [...quotationItems];
+    newItems[index] = {
+      ...newItems[index],
+      [field]: value,
+    };
+    
+    // Recalcular total se for quantity ou unitValue
+    if (field === "quantity" || field === "unitValue") {
+      const quantity = parseFloat(newItems[index].quantity) || 0;
+      const unitValue = parseFloat(newItems[index].unitValue) || 0;
+      newItems[index].totalValue = quantity * unitValue;
+    }
+    
+    setQuotationItems(newItems);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (!validateForm()) {
+      toast.error("Por favor, preencha todos os campos obrigatórios corretamente");
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      const isQuotationForm = form?.settings?.formType === "quotation";
+      let answersArray = [];
+
+      if (isQuotationForm) {
+        // Para formulários de cotação, incluir campos normais + dados dos itens
+        answersArray = Object.keys(answers).map((fieldId) => {
+          const field = form.fields.find(f => f.id === Number(fieldId));
+          let answer = answers[fieldId];
+          
+          // Normalizar telefone antes de enviar (remover 9 duplicado após DDD)
+          if (field && field.fieldType === "phone" && answer) {
+            answer = normalizePhone(answer);
+          }
+          
+          return {
+            fieldId: Number(fieldId),
+            answer: answer,
+          };
+        });
+
+        // Adicionar dados dos itens de cotação como respostas especiais
+        quotationItems.forEach((item, index) => {
+          // Criar uma resposta especial para cada item (vamos usar um fieldId especial ou metadata)
+          // Por enquanto, vamos enviar como parte do metadata ou criar campos virtuais
+          // Na verdade, precisamos ver como o backend processa isso
+          // Vou enviar como parte do answers usando um formato especial
+        });
+      } else {
+        answersArray = Object.keys(answers).map((fieldId) => {
+          const field = form.fields.find(f => f.id === Number(fieldId));
+          let answer = answers[fieldId];
+          
+          // Normalizar telefone antes de enviar (remover 9 duplicado após DDD)
+          if (field && field.fieldType === "phone" && answer) {
+            answer = normalizePhone(answer);
+          }
+          
+          return {
+            fieldId: Number(fieldId),
+            answer: answer,
+          };
+        });
+      }
+
+      const payload = {
+        answers: answersArray,
+      };
+      
+      // Adicionar quotationItems apenas se for formulário de cotação e houver itens
+      if (isQuotationForm && quotationItems && quotationItems.length > 0) {
+        payload.quotationItems = quotationItems;
+      }
+      
+      console.log("PublicForm: Enviando formulário:", {
+        isQuotationForm,
+        quotationItemsCount: quotationItems?.length || 0,
+        quotationItems: isQuotationForm ? quotationItems : undefined,
+      });
+      
+      await api.post(`/public/forms/${publicId}/submit`, payload);
+
+      setSubmitted(true);
+
+      if (form.successRedirectUrl) {
+        setTimeout(() => {
+          window.location.href = form.successRedirectUrl;
+        }, 2000);
+      }
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const renderField = (field) => {
+    const value = answers[field.id] || "";
+    const error = errors[field.id];
+    const hasError = !!error;
+
+    switch (field.fieldType) {
+      case "phone":
+        // Máscara que sempre aceita 9 dígitos após o DDD para permitir digitar o 9 após o DDD
+        // O formato 55(DDD)99999-9999 permite digitar o 9 após o DDD, que será removido no envio
+        // A normalização remove o 9 duplicado quando há 14 dígitos (55 + DDD + 9 + número)
+        return (
+          <InputMask
+            mask="55(99)99999-9999"
+            maskChar={null}
+            value={value}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+          >
+            {(inputProps) => (
+              <TextField
+                {...inputProps}
+                fullWidth
+                variant={fieldVariant}
+                type="text"
+                placeholder="55(99)99999-9999"
+                error={hasError}
+                helperText={error || field.helpText}
+                inputProps={{
+                  maxLength: field.validation?.maxLength,
+                  minLength: field.validation?.minLength,
+                }}
+              />
+            )}
+          </InputMask>
+        );
+      case "text":
+      case "email":
+      case "number":
+        return (
+          <TextField
+            fullWidth
+            variant={fieldVariant}
+            type={field.fieldType === "email" ? "email" : field.fieldType === "number" ? "number" : "text"}
+            value={value}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            placeholder={field.placeholder}
+            error={hasError}
+            helperText={error || field.helpText}
+            inputProps={{
+              maxLength: field.validation?.maxLength,
+              minLength: field.validation?.minLength,
+            }}
+          />
+        );
+
+      case "textarea":
+        return (
+          <TextField
+            fullWidth
+            variant={fieldVariant}
+            multiline
+            rows={4}
+            value={value}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            placeholder={field.placeholder}
+            error={hasError}
+            helperText={error || field.helpText}
+          />
+        );
+
+      case "select":
+        return (
+          <FormControl fullWidth variant={fieldVariant} error={hasError}>
+            <InputLabel>{field.placeholder || "Selecione..."}</InputLabel>
+            <Select
+              value={value}
+              onChange={(e) => handleFieldChange(field.id, e.target.value)}
+              label={field.placeholder || "Selecione..."}
+            >
+              {field.options?.map((option, index) => (
+                <MenuItem key={index} value={option}>
+                  {option}
+                </MenuItem>
+              ))}
+            </Select>
+            {(error || field.helpText) && (
+              <FormHelperText>{error || field.helpText}</FormHelperText>
+            )}
+          </FormControl>
+        );
+
+      case "radio":
+        return (
+          <FormControl component="fieldset" error={hasError} fullWidth>
+            <RadioGroup
+              value={value}
+              onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            >
+              {field.options?.map((option, index) => (
+                <FormControlLabel
+                  key={index}
+                  value={option}
+                  control={<Radio />}
+                  label={option}
+                />
+              ))}
+            </RadioGroup>
+            {(error || field.helpText) && (
+              <FormHelperText>{error || field.helpText}</FormHelperText>
+            )}
+          </FormControl>
+        );
+
+      case "checkbox":
+        const checkboxValue = Array.isArray(value) ? value : [];
+        return (
+          <FormControl component="fieldset" error={hasError} fullWidth>
+            <Box>
+              {field.options?.map((option, index) => (
+                <FormControlLabel
+                  key={index}
+                  control={
+                    <Checkbox
+                      checked={checkboxValue.includes(option)}
+                      onChange={(e) => {
+                        const newValue = e.target.checked
+                          ? [...checkboxValue, option]
+                          : checkboxValue.filter((v) => v !== option);
+                        handleFieldChange(field.id, newValue);
+                      }}
+                    />
+                  }
+                  label={option}
+                />
+              ))}
+            </Box>
+            {(error || field.helpText) && (
+              <FormHelperText>{error || field.helpText}</FormHelperText>
+            )}
+          </FormControl>
+        );
+
+      case "date":
+        return (
+          <TextField
+            fullWidth
+            variant={fieldVariant}
+            type="date"
+            value={value}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            error={hasError}
+            helperText={error || field.helpText}
+            InputLabelProps={{
+              shrink: true,
+            }}
+          />
+        );
+
+      case "rating":
+        return (
+          <Box>
+            <Rating
+              value={value || 0}
+              onChange={(event, newValue) => {
+                handleFieldChange(field.id, newValue || 0);
+              }}
+              size="large"
+            />
+            {(error || field.helpText) && (
+              <FormHelperText error={hasError}>
+                {error || field.helpText}
+              </FormHelperText>
+            )}
+          </Box>
+        );
+
+      default:
+        return (
+          <TextField
+            fullWidth
+            variant={fieldVariant}
+            value={value}
+            onChange={(e) => handleFieldChange(field.id, e.target.value)}
+            placeholder={field.placeholder}
+            error={hasError}
+            helperText={error || field.helpText}
+          />
+        );
+    }
+  };
+
+  if (loading) {
+    return (
+      <Box className={classes.loadingContainer}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (!form) {
+    return (
+      <Box className={classes.root}>
+        <Alert severity="error">Formulário não encontrado</Alert>
+      </Box>
+    );
+  }
+
+  // Se for formulário de cardápio, renderizar componente específico
+  if (form.settings?.formType === "cardapio") {
+    return <PublicMenuForm form={form} slug={publicId} />;
+  }
+
+  // Se for formulário de agendamento, renderizar fluxo de agendamento
+  if (form.settings?.formType === "agendamento") {
+    return <PublicAgendamentoForm form={form} slug={publicId} />;
+  }
+
+  if (submitted) {
+    return (
+      <Box className={classes.root}>
+        <Paper className={classes.formPaper}>
+          <Box className={classes.successMessage}>
+            <Alert severity="success" style={{ marginBottom: 16 }}>
+              {form.successMessage || "Obrigado! Sua resposta foi enviada com sucesso."}
+            </Alert>
+            {form.successRedirectUrl && (
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
+                Você será redirecionado em instantes...
+              </Typography>
+            )}
+            {/* Link para CompuChat na mensagem de sucesso */}
+            <Box style={{ marginTop: 24, textAlign: "center", paddingTop: 16, borderTop: "1px solid #e0e0e0" }}>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 8 }}>
+                Formulário criado com
+              </Typography>
+              <Button
+                href="https://www.compuchat.cloud"
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="text"
+                color="primary"
+                size="small"
+                style={{ textTransform: "none" }}
+              >
+                CompuChat
+              </Button>
+            </Box>
+          </Box>
+        </Paper>
+      </Box>
+    );
+  }
+
+  const sortedFields = (form.fields || []).sort((a, b) => a.order - b.order);
+  const appStyles = getFormAppearanceStyles(form);
+  const fieldVariant = appStyles.fieldVariant || "outlined";
+
+  return (
+    <Box className={classes.root} style={appStyles.rootStyle}>
+      <Box className={classes.container} style={appStyles.containerStyle}>
+        <Paper
+          className={classes.formPaper}
+          style={appStyles.formPaperStyle}
+        >
+          {form.logoUrl && (
+            <Box
+              style={{
+                textAlign: form.logoPosition === "center" ? "center" : form.logoPosition === "bottom" ? "right" : "left",
+                marginBottom: form.logoPosition === "bottom" ? 0 : 16,
+                marginTop: form.logoPosition === "top" ? 0 : 16,
+              }}
+            >
+              <img
+                src={form.logoUrl}
+                alt="Logo"
+                className={classes.logo}
+                style={{
+                  marginLeft: form.logoPosition === "right" ? "auto" : 0,
+                  marginRight: form.logoPosition === "left" ? "auto" : 0,
+                  display: "block",
+                }}
+              />
+            </Box>
+          )}
+
+          <Box className={classes.header}>
+            <Typography
+              className={classes.title}
+              style={appStyles.titleStyle}
+            >
+              {form.name}
+            </Typography>
+            {form.description && (
+              <Typography className={classes.description}>
+                {form.description}
+              </Typography>
+            )}
+          </Box>
+
+          <form onSubmit={handleSubmit}>
+            {sortedFields.map((field) => {
+              if (!isFieldVisible(field, answers, sortedFields)) return null;
+              return (
+                <Box key={field.id} className={classes.fieldContainer}>
+                  <Typography className={classes.fieldLabel}>
+                    {field.label}
+                    {field.isRequired && (
+                      <span className={classes.required}>*</span>
+                    )}
+                  </Typography>
+                  {renderField(field)}
+                </Box>
+              );
+            })}
+
+            {/* Renderizar tabela de itens de cotação se for formulário de cotação */}
+            {form.settings?.formType === "quotation" && (
+              <Box className={classes.fieldContainer} style={{ marginTop: 24 }}>
+                <Typography className={classes.fieldLabel} style={{ marginBottom: 16 }}>
+                  Itens da Cotação
+                </Typography>
+                {errors["quotationItems"] && (
+                  <Alert severity="error" style={{ marginBottom: 16 }}>
+                    {errors["quotationItems"]}
+                  </Alert>
+                )}
+                {quotationItems.length > 0 ? (
+                  <Paper style={{ overflowX: "auto" }}>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Produto</TableCell>
+                          <TableCell align="center" style={{ width: 120 }}>Quantidade</TableCell>
+                          <TableCell align="center" style={{ width: 150 }}>Valor Unitário</TableCell>
+                          <TableCell align="center" style={{ width: 150 }}>Valor Total</TableCell>
+                          <TableCell>Observações</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {quotationItems.map((item, index) => (
+                          <TableRow key={index}>
+                            <TableCell>
+                              <TextField
+                                fullWidth
+                                variant="outlined"
+                                size="small"
+                                value={item.productName || ""}
+                                onChange={(e) =>
+                                  handleQuotationItemChange(
+                                    index,
+                                    "productName",
+                                    e.target.value
+                                  )
+                                }
+                                placeholder="Nome do produto"
+                                error={!!errors[`quotationItem-${index}-productName`]}
+                                helperText={errors[`quotationItem-${index}-productName`]}
+                              />
+                            </TableCell>
+                            <TableCell align="center">
+                              <TextField
+                                type="number"
+                                variant="outlined"
+                                size="small"
+                                value={item.quantity || 1}
+                                onChange={(e) =>
+                                  handleQuotationItemChange(
+                                    index,
+                                    "quantity",
+                                    parseInt(e.target.value) || 1
+                                  )
+                                }
+                                inputProps={{ min: 1 }}
+                                style={{ width: 100 }}
+                                error={!!errors[`quotationItem-${index}-quantity`]}
+                                helperText={errors[`quotationItem-${index}-quantity`]}
+                              />
+                            </TableCell>
+                            <TableCell align="center">
+                              <TextField
+                                type="number"
+                                variant="outlined"
+                                size="small"
+                                value={item.unitValue || 0}
+                                onChange={(e) =>
+                                  handleQuotationItemChange(
+                                    index,
+                                    "unitValue",
+                                    parseFloat(e.target.value) || 0
+                                  )
+                                }
+                                InputProps={{
+                                  startAdornment: <InputAdornment position="start">R$</InputAdornment>,
+                                }}
+                                style={{ width: 120 }}
+                              />
+                            </TableCell>
+                            <TableCell align="center">
+                              <TextField
+                                type="number"
+                                variant="outlined"
+                                size="small"
+                                value={item.totalValue || 0}
+                                InputProps={{
+                                  readOnly: true,
+                                  startAdornment: <InputAdornment position="start">R$</InputAdornment>,
+                                }}
+                                style={{ width: 120 }}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <TextField
+                                fullWidth
+                                multiline
+                                rows={1}
+                                variant="outlined"
+                                size="small"
+                                value={item.observations || ""}
+                                onChange={(e) =>
+                                  handleQuotationItemChange(
+                                    index,
+                                    "observations",
+                                    e.target.value
+                                  )
+                                }
+                                placeholder="Observações"
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </Paper>
+                ) : (
+                  <Alert severity="info" style={{ marginBottom: 16 }}>
+                    Nenhum item de cotação configurado. Configure os itens no editor de formulários.
+                  </Alert>
+                )}
+              </Box>
+            )}
+
+            <Button
+              type="submit"
+              variant="contained"
+              color="primary"
+              fullWidth
+              className={classes.submitButton}
+              disabled={submitting}
+              style={appStyles.submitButtonStyle}
+            >
+              {submitting ? (
+                <>
+                  <CircularProgress size={24} style={{ marginRight: 8 }} />
+                  Enviando...
+                </>
+              ) : (
+                "Enviar"
+              )}
+            </Button>
+
+            {/* Link para CompuChat no final do formulário */}
+            <Box style={{ marginTop: 24, textAlign: "center", paddingTop: 16, borderTop: "1px solid #e0e0e0" }}>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 8 }}>
+                Formulário criado com
+              </Typography>
+              <Button
+                href="https://www.compuchat.cloud"
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="text"
+                color="primary"
+                size="small"
+                style={{ textTransform: "none" }}
+              >
+                CompuChat
+              </Button>
+            </Box>
+          </form>
+        </Paper>
+      </Box>
+    </Box>
+  );
+};
+
+export default PublicForm;

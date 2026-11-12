@@ -1,0 +1,1853 @@
+"""Handler UniPlus: grava delivery aberto em CONTAMESA / CONTAMESAITEM no Postgres local."""
+from __future__ import annotations
+
+import logging
+import re
+import uuid
+import unicodedata
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from uniplus_dsn import current_uniplus_dsn
+
+logger = logging.getLogger("uniplus")
+
+try:
+    import psycopg2
+    from psycopg2 import OperationalError, InterfaceError, IntegrityError
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    OperationalError = Exception  # type: ignore
+    InterfaceError = Exception  # type: ignore
+    IntegrityError = Exception  # type: ignore
+    RealDictCursor = None  # type: ignore
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NUMERO_RE = re.compile(r"(\d+)")
+
+
+def _safe_print_text(raw: Any, *, mesa: bool = False) -> str:
+    """O layout Unichef imprime OBS como 'OBS : ***' + texto.
+
+    Se o texto começa com 'Mesa N', o driver tenta ler '***Mesa N' como
+    comando ESC/POS (convertStringToArrayInt) e estoura NTFR815.
+    """
+    text = str(raw or "").replace("***", "").strip()
+    if not text:
+        return ""
+    if mesa and (text.startswith("Mesa ") or "Compuchat POS-" in text):
+        return ""
+    return text[:255]
+
+
+def parse_numeromesa(raw: Any) -> Optional[int]:
+    """Aceita 2, '2', 'Mesa 2' — o POS às vezes manda o rótulo, não o número."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        n = int(raw)
+        return n if n > 0 else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        n = int(text)
+        return n if n > 0 else None
+    found = _NUMERO_RE.findall(text)
+    if not found:
+        return None
+    n = int(found[-1])
+    return n if n > 0 else None
+
+
+CONNECT_TIMEOUT_SEC = 8
+STATEMENT_TIMEOUT_MS = 15000
+# Fallback CONTAMESAITEM.idunidademedida quando o produto UniPlus não tem unidade
+DEFAULT_IDUNIDADEMEDIDA = 30
+
+
+class UniplusPermanentError(RuntimeError):
+    """Erro que não deve ser retentado pelo SaaS."""
+
+
+def _pad_hash(value: str) -> str:
+    """UUID com hífens (Java UUID.fromString) + pad CHAR(40).
+
+    Hash sem hífen falha no parse do UniPlus → ContaCliente.hash=null →
+    NPE em OperacaoDAO.existeOperacaoPendenteUnichef ao abrir/finalizar delivery.
+    """
+    s = (value or "").strip()
+    hex_only = s.replace("-", "").replace(" ", "")
+    if len(hex_only) == 32 and all(c in "0123456789abcdefABCDEF" for c in hex_only):
+        s = (
+            f"{hex_only[:8]}-{hex_only[8:12]}-{hex_only[12:16]}-"
+            f"{hex_only[16:20]}-{hex_only[20:32]}"
+        )
+    elif not s:
+        s = str(uuid.uuid4())
+    return (s + (" " * 40))[:40]
+
+
+def _safe_ident(name: str, default: str) -> str:
+    value = (name or default or "").strip()
+    if not _IDENT_RE.match(value):
+        raise UniplusPermanentError(
+            f"ERR_UNIPLUS_CONFIG: identificador SQL inválido '{name}'"
+        )
+    return value
+
+
+def _cfg(db_module) -> Dict[str, str]:
+    return {
+        "enabled": (db_module.get_config("uniplus_enabled") or "false").lower(),
+        "connection_string": current_uniplus_dsn(db_module),
+        "produto_table": _safe_ident(
+            db_module.get_config("uniplus_produto_table") or "produto", "produto"
+        ),
+        "produto_codigo_column": _safe_ident(
+            db_module.get_config("uniplus_produto_codigo_column") or "codigo", "codigo"
+        ),
+        "produto_id_column": _safe_ident(
+            db_module.get_config("uniplus_produto_id_column") or "id", "id"
+        ),
+        "contamesa_table": _safe_ident(
+            db_module.get_config("uniplus_contamesa_table") or "contamesa", "contamesa"
+        ),
+        "contamesaitem_table": _safe_ident(
+            db_module.get_config("uniplus_contamesaitem_table") or "contamesaitem",
+            "contamesaitem",
+        ),
+    }
+
+
+def configured_mesa_tipopedido(db_module) -> int:
+    """Tipo de pedido de mesa no Uniplus. 0 é delivery; o padrão de mesa é 2."""
+    raw = db_module.get_config("uniplus_mesa_tipopedido")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = 2
+    if value == 0:
+        value = 2
+    return value
+
+
+def _refuse_pdv_bridge_sql(db_module) -> None:
+    """Ponte HTTP do Servidor PDV não abre sessão Postgres."""
+    from yoda_gourmet import PDV_BRIDGE_SQL_BLOCKED, uses_pdv_http_bridge
+
+    if uses_pdv_http_bridge(db_module):
+        raise UniplusPermanentError(PDV_BRIDGE_SQL_BLOCKED)
+
+
+def list_open_contas(
+    db_module, tipopedido: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Contas abertas no Uniplus (status=1), indexadas por numeromesa."""
+    from yoda_gourmet import launch_mode, list_open_contas_yoda
+
+    if launch_mode(db_module) == "yoda":
+        return list_open_contas_yoda(db_module)
+    if not is_uniplus_enabled(db_module) or psycopg2 is None:
+        return []
+    cfg = _cfg(db_module)
+    conn = _connect(cfg["connection_string"])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            mesa_table = cfg["contamesa_table"]
+            cols = _table_columns(cur, mesa_table)
+            cliente_expr = "NULL"
+            if "nomecliente" in cols:
+                cliente_expr = "nomecliente"
+            elif "nome" in cols:
+                cliente_expr = "nome"
+            total_expr = "valortotal" if "valortotal" in cols else "0"
+            where = "status = 1 AND numeromesa IS NOT NULL"
+            params: List[Any] = []
+            if tipopedido is not None and "tipopedido" in cols:
+                where += " AND tipopedido = %s"
+                params.append(int(tipopedido))
+            cur.execute(
+                f"""
+                SELECT numeromesa, {cliente_expr} AS cliente, {total_expr} AS valortotal
+                FROM {mesa_table}
+                WHERE {where}
+                ORDER BY id DESC
+                """,
+                params,
+            )
+            seen = set()
+            out: List[Dict[str, Any]] = []
+            for row in cur.fetchall() or []:
+                try:
+                    num = int(row["numeromesa"])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if num in seen:
+                    continue
+                seen.add(num)
+                out.append(
+                    {
+                        "numeromesa": num,
+                        "cliente": str(row.get("cliente") or "").strip(),
+                        "valortotal": float(row.get("valortotal") or 0),
+                    }
+                )
+            return out
+    finally:
+        conn.close()
+
+
+def get_open_mesa_conta(
+    db_module, numeromesa: int, tipopedido: Optional[int] = None
+) -> Dict[str, Any]:
+    """Resumo da conta aberta do tipopedido configurado. Delivery (0) é ignorado."""
+    empty = {
+        "open": False,
+        "numeromesa": int(numeromesa),
+        "cliente": "",
+        "valortotal": 0.0,
+        "itens": [],
+    }
+    from yoda_gourmet import get_open_mesa_conta_yoda, launch_mode
+
+    if launch_mode(db_module) == "yoda":
+        return get_open_mesa_conta_yoda(db_module, numeromesa)
+    if not is_uniplus_enabled(db_module) or psycopg2 is None:
+        return empty
+    cfg = _cfg(db_module)
+    conn = _connect(cfg["connection_string"])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            mesa_table = cfg["contamesa_table"]
+            item_table = cfg["contamesaitem_table"]
+            cols = _table_columns(cur, mesa_table)
+            cliente_expr = "NULL"
+            if "nomecliente" in cols:
+                cliente_expr = "nomecliente"
+            elif "nome" in cols:
+                cliente_expr = "nome"
+            total_expr = "valortotal" if "valortotal" in cols else "0"
+            where = "numeromesa = %s AND status = 1"
+            params: List[Any] = [int(numeromesa)]
+            mesa_tipo = (
+                configured_mesa_tipopedido(db_module)
+                if tipopedido is None
+                else int(tipopedido)
+            )
+            if "tipopedido" in cols:
+                where += " AND tipopedido = %s"
+                params.append(mesa_tipo)
+            cur.execute(
+                f"""
+                SELECT id, numeromesa, {cliente_expr} AS cliente, {total_expr} AS valortotal
+                FROM {mesa_table}
+                WHERE {where}
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            if not row:
+                return empty
+            conta_id = int(row["id"])
+            item_cols = _table_columns(cur, item_table)
+            item_where = "idcontamesa = %s"
+            if "cancelado" in item_cols:
+                item_where += " AND COALESCE(cancelado, 0) = 0"
+            nome_col = "nomeproduto" if "nomeproduto" in item_cols else "''"
+            qtd_col = "quantidade" if "quantidade" in item_cols else "1"
+            tot_col = "valortotal" if "valortotal" in item_cols else "0"
+            selects = [
+                f"{nome_col} AS nomeproduto",
+                f"{qtd_col} AS quantidade",
+                f"{tot_col} AS valortotal",
+            ]
+            if "observacao" in item_cols:
+                selects.append("observacao")
+            if "precounitario" in item_cols:
+                selects.append("precounitario")
+            if "idproduto" in item_cols:
+                selects.append("idproduto")
+            if "codigoproduto" in item_cols:
+                selects.append("codigoproduto")
+            if "datahoralancamento" in item_cols:
+                selects.append("datahoralancamento")
+            if "horaabertura" in item_cols:
+                selects.append("horaabertura")
+            if "currenttimemillis" in item_cols:
+                selects.append("currenttimemillis")
+            cur.execute(
+                f"""
+                SELECT {", ".join(selects)}
+                FROM {item_table}
+                WHERE {item_where}
+                ORDER BY id
+                """,
+                (conta_id,),
+            )
+            itens = []
+            for it in cur.fetchall() or []:
+                idproduto = it.get("idproduto")
+                try:
+                    idproduto_val = int(idproduto) if idproduto is not None else None
+                except (TypeError, ValueError):
+                    idproduto_val = None
+                itens.append(
+                    {
+                        "nomeproduto": str(it.get("nomeproduto") or "").strip(),
+                        "quantidade": float(it.get("quantidade") or 0),
+                        "valortotal": float(it.get("valortotal") or 0),
+                        "precounitario": float(it.get("precounitario") or 0),
+                        "observacao": str(it.get("observacao") or "").strip(),
+                        "hora": _format_conta_hora(it),
+                        "idproduto": idproduto_val,
+                        "codigoproduto": str(it.get("codigoproduto") or "").strip(),
+                    }
+                )
+            return {
+                "open": True,
+                "numeromesa": int(row["numeromesa"] or numeromesa),
+                "cliente": str(row.get("cliente") or "").strip(),
+                "valortotal": float(row.get("valortotal") or 0),
+                "itens": itens,
+            }
+    finally:
+        conn.close()
+
+
+def update_open_mesa_cliente_name(
+    db_module,
+    numeromesa: int,
+    customer_name: str,
+    tipopedido: int = 2,
+) -> bool:
+    """Atualiza nome do cliente na conta aberta da mesa no Uniplus."""
+    customer_name = str(customer_name or "").strip()[:60]
+    _refuse_pdv_bridge_sql(db_module)
+    if not customer_name or not is_uniplus_enabled(db_module) or psycopg2 is None:
+        return False
+    cfg = _cfg(db_module)
+    conn = _connect(cfg["connection_string"])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            mesa_table = cfg["contamesa_table"]
+            cols = _table_columns(cur, mesa_table)
+            conta = _open_conta_by_numeromesa(
+                cur, mesa_table, int(numeromesa), int(tipopedido)
+            )
+            if not conta:
+                return False
+            sets: List[str] = []
+            params: List[Any] = []
+            if "nomecliente" in cols:
+                sets.append("nomecliente = %s")
+                params.append(customer_name)
+            if "nome" in cols:
+                sets.append("nome = %s")
+                params.append(customer_name)
+            if not sets:
+                return False
+            params.append(int(conta["id"]))
+            cur.execute(
+                f"UPDATE {mesa_table} SET {', '.join(sets)} WHERE id = %s",
+                params,
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _utc_naive(dt: datetime) -> datetime:
+    """Normaliza para UTC sem tz, igual ao cupom (receipt_formatter)."""
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None) - (dt.utcoffset() or timedelta(0))
+    return dt
+
+
+def _format_conta_hora(it: Dict[str, Any]) -> str:
+    """Hora do item em Brasília (UTC-3), igual à impressão da cozinha.
+
+    O Postgres do Print Agent costuma estar em outro fuso. currenttimemillis
+    é epoch UTC; timestamp sem tz gravado pelo Agent também é UTC.
+    """
+    dt = None
+    try:
+        millis = int(it.get("currenttimemillis") or 0)
+        if millis > 10_000_000_000:
+            dt = datetime.utcfromtimestamp(millis / 1000.0)
+        elif millis > 1_000_000_000:
+            dt = datetime.utcfromtimestamp(float(millis))
+    except (TypeError, ValueError, OSError):
+        dt = None
+    if dt is None:
+        raw = it.get("datahoralancamento") or it.get("horaabertura")
+        if isinstance(raw, datetime):
+            dt = _utc_naive(raw)
+        elif raw is not None:
+            text = str(raw).strip()
+            if text:
+                try:
+                    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                    dt = _utc_naive(parsed)
+                except ValueError:
+                    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+                        try:
+                            dt = datetime.strptime(text[:26], fmt)
+                            break
+                        except ValueError:
+                            continue
+    if dt is None:
+        return ""
+    brasil = _utc_naive(dt) - timedelta(hours=3)
+    return brasil.strftime("%d/%m %H:%M")
+
+
+def _brasil_today():
+    return (datetime.utcnow() - timedelta(hours=3)).date()
+
+
+def list_pedidos_dia(
+    db_module, day=None, tipopedido: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Itens de mesa lançados no dia (Brasília), mais recentes primeiro."""
+    _refuse_pdv_bridge_sql(db_module)
+    if not is_uniplus_enabled(db_module) or psycopg2 is None:
+        return []
+    alvo = day or _brasil_today()
+    cfg = _cfg(db_module)
+    conn = _connect(cfg["connection_string"])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            mesa_table = cfg["contamesa_table"]
+            item_table = cfg["contamesaitem_table"]
+            mesa_cols = _table_columns(cur, mesa_table)
+            item_cols = _table_columns(cur, item_table)
+            if "idcontamesa" not in item_cols:
+                return []
+            cliente_expr = "NULL"
+            if "nomecliente" in mesa_cols:
+                cliente_expr = f"m.nomecliente"
+            elif "nome" in mesa_cols:
+                cliente_expr = "m.nome"
+            selects = [
+                "i.id AS id",
+                "m.numeromesa AS numeromesa",
+                f"{cliente_expr} AS cliente",
+            ]
+            for col, alias in (
+                ("nomeproduto", "nomeproduto"),
+                ("quantidade", "quantidade"),
+                ("observacao", "observacao"),
+                ("codigoproduto", "codigoproduto"),
+                ("entregue", "entregue"),
+                ("datahoralancamento", "datahoralancamento"),
+                ("horaabertura", "horaabertura"),
+                ("currenttimemillis", "currenttimemillis"),
+            ):
+                if col in item_cols:
+                    selects.append(f"i.{col} AS {alias}")
+            where = ["1=1"]
+            params: List[Any] = []
+            if "tipopedido" in mesa_cols:
+                mesa_tipo = (
+                    configured_mesa_tipopedido(db_module)
+                    if tipopedido is None
+                    else int(tipopedido)
+                )
+                where.append("m.tipopedido = %s")
+                params.append(mesa_tipo)
+            if "cancelado" in item_cols:
+                where.append("COALESCE(i.cancelado, 0) = 0")
+            date_parts = []
+            day_txt = alvo.isoformat()
+            if "data" in item_cols:
+                date_parts.append("CAST(i.data AS date) = %s")
+                params.append(alvo)
+            if "datahoralancamento" in item_cols:
+                date_parts.append("CAST(i.datahoralancamento AS text) LIKE %s")
+                params.append(day_txt + "%")
+            if "data" in mesa_cols:
+                date_parts.append("CAST(m.data AS date) = %s")
+                params.append(alvo)
+            if "currenttimemillis" in item_cols:
+                start = datetime(alvo.year, alvo.month, alvo.day, 3, 0, 0, tzinfo=timezone.utc)
+                start_ms = int(start.timestamp() * 1000)
+                end_ms = start_ms + 24 * 60 * 60 * 1000
+                date_parts.append("(i.currenttimemillis >= %s AND i.currenttimemillis < %s)")
+                params.extend([start_ms, end_ms])
+            if date_parts:
+                where.append("(" + " OR ".join(date_parts) + ")")
+            order_col = "i.id DESC"
+            if "currenttimemillis" in item_cols:
+                order_col = "COALESCE(i.currenttimemillis, 0) DESC, i.id DESC"
+            cur.execute(
+                f"""
+                SELECT {", ".join(selects)}
+                FROM {item_table} i
+                JOIN {mesa_table} m ON m.id = i.idcontamesa
+                WHERE {" AND ".join(where)}
+                ORDER BY {order_col}
+                """,
+                params,
+            )
+            out: List[Dict[str, Any]] = []
+            for row in cur.fetchall() or []:
+                try:
+                    item_id = int(row.get("id") or 0)
+                    mesa = int(row.get("numeromesa") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if item_id <= 0:
+                    continue
+                entregue = row.get("entregue")
+                out.append(
+                    {
+                        "id": item_id,
+                        "numeromesa": mesa,
+                        "cliente": str(row.get("cliente") or "").strip(),
+                        "nomeproduto": str(row.get("nomeproduto") or "").strip(),
+                        "quantidade": float(row.get("quantidade") or 0),
+                        "observacao": str(row.get("observacao") or "").strip(),
+                        "codigoproduto": str(row.get("codigoproduto") or "").strip(),
+                        "entregue": bool(int(entregue or 0)) if entregue is not None else False,
+                        "hora": _format_conta_hora(row),
+                        "currenttimemillis": int(row.get("currenttimemillis") or 0),
+                    }
+                )
+            return out
+    finally:
+        conn.close()
+
+
+def set_item_entregue(db_module, item_id: int, entregue: bool) -> bool:
+    _refuse_pdv_bridge_sql(db_module)
+    if not is_uniplus_enabled(db_module) or psycopg2 is None:
+        return False
+    cfg = _cfg(db_module)
+    conn = _connect(cfg["connection_string"])
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            item_table = cfg["contamesaitem_table"]
+            cols = _table_columns(cur, item_table)
+            if "entregue" not in cols:
+                raise RuntimeError("coluna entregue ausente em contamesaitem")
+            cur.execute("SELECT pg_advisory_xact_lock(872014001)")
+            cur.execute(
+                f"UPDATE {item_table} SET entregue = %s WHERE id = %s",
+                (1 if entregue else 0, int(item_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def is_uniplus_enabled(db_module) -> bool:
+    enabled = (db_module.get_config("uniplus_enabled") or "false").lower()
+    dsn = current_uniplus_dsn(db_module)
+    return enabled in ("true", "1", "yes", "on") and bool(dsn)
+
+
+def validate_uniplus_connection(
+    connection_string: str,
+    contamesa_table: str = "contamesa",
+    contamesaitem_table: str = "contamesaitem",
+) -> Tuple[bool, str]:
+    """Testa o DSN montado + existência das tabelas. Usado no save do agente."""
+    if psycopg2 is None:
+        return False, "psycopg2 não instalado"
+    dsn = (connection_string or "").strip()
+    if not dsn:
+        return False, "conexão UniPlus vazia"
+    try:
+        mesa = _safe_ident(contamesa_table, "contamesa")
+        item = _safe_ident(contamesaitem_table, "contamesaitem")
+    except UniplusPermanentError as e:
+        return False, str(e)
+    try:
+        conn = psycopg2.connect(dsn, connect_timeout=CONNECT_TIMEOUT_SEC)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.execute(
+                    """
+                    SELECT to_regclass(%s) AS mesa, to_regclass(%s) AS item
+                    """,
+                    (mesa, item),
+                )
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    return False, f"tabela {mesa} não encontrada"
+                if not row[1]:
+                    return False, f"tabela {item} não encontrada"
+        finally:
+            conn.close()
+        return True, "ok"
+    except Exception as e:
+        return False, str(e)
+
+
+def _connect(dsn: str):
+    """Abre conexão curta. Sempre fechar no finally do caller — Unico não tolera sessão concorrente."""
+    conn = psycopg2.connect(dsn, connect_timeout=CONNECT_TIMEOUT_SEC)
+    with conn.cursor() as cur:
+        cur.execute(f"SET statement_timeout = {int(STATEMENT_TIMEOUT_MS)}")
+        try:
+            cur.execute('SET search_path TO public, unico, "$user"')
+        except Exception:
+            pass
+        try:
+            cur.execute("SET application_name = 'compuchat_print_agent'")
+        except Exception:
+            pass
+    return conn
+
+
+def _normalize_nome(nome: str) -> str:
+    s = unicodedata.normalize("NFD", str(nome or ""))
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = s.lower()
+    s = re.sub(r"\b\d+\s*ml\b", " ", s)
+    s = re.sub(r"\b\d+\s*l\b", " ", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _produto_nome_column(cur, table: str) -> str:
+    """Detecta coluna de nome no cadastro de produto."""
+    cur.execute(
+        """
+        SELECT lower(column_name) AS col
+        FROM information_schema.columns
+        WHERE lower(table_name) = lower(%s)
+          AND table_schema = current_schema()
+          AND lower(column_name) IN ('nome', 'descricao', 'produto', 'nomefantasia')
+        """,
+        (table,),
+    )
+    rows = cur.fetchall() or []
+    cols = set()
+    for row in rows:
+        cols.add(str(row["col"] if isinstance(row, dict) else row[0]).lower())
+    for preferred in ("nome", "descricao", "produto", "nomefantasia"):
+        if preferred in cols:
+            return preferred
+    return ""
+
+
+def _produto_has_column(cur, table: str, column: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE lower(table_name) = lower(%s)
+          AND table_schema NOT IN ('pg_catalog', 'information_schema')
+          AND lower(column_name) = lower(%s)
+        LIMIT 1
+        """,
+        (table, column),
+    )
+    return bool(cur.fetchone())
+
+
+def _fetch_produto_unidademedida(cur, table: str, id_col: str, produto_id: int) -> int:
+    """Retorna idunidademedida do produto; fallback DEFAULT_IDUNIDADEMEDIDA (30)."""
+    if not _produto_has_column(cur, table, "idunidademedida"):
+        return DEFAULT_IDUNIDADEMEDIDA
+    cur.execute(
+        f"SELECT idunidademedida FROM {table} WHERE {id_col} = %s LIMIT 1",
+        (produto_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return DEFAULT_IDUNIDADEMEDIDA
+    val = row["idunidademedida"] if isinstance(row, dict) else row[0]
+    if val is None:
+        return DEFAULT_IDUNIDADEMEDIDA
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return DEFAULT_IDUNIDADEMEDIDA
+
+
+def _resolve_produto_id(
+    cur, cfg: Dict[str, str], codigo: str, nome: str = ""
+) -> Tuple[int, str]:
+    """
+    Resolve id do produto UniPlus a partir do campo visível `codigo`.
+
+    Ordem:
+    1) Match exato em produto.codigo (campo visível ao usuário)
+    2) Se o valor bater no id interno, erro orientando a usar o codigo
+    """
+    table = cfg["produto_table"]
+    codigo_col = cfg["produto_codigo_column"]
+    id_col = cfg["produto_id_column"]
+    codigo = str(codigo or "").strip()
+    nome = str(nome or "").strip()
+
+    if codigo:
+        cur.execute(
+            f"SELECT {id_col} AS id, {codigo_col} AS codigo FROM {table} WHERE CAST({codigo_col} AS text) = %s LIMIT 1",
+            (codigo,),
+        )
+        row = cur.fetchone()
+        if row:
+            rid = int(row["id"] if isinstance(row, dict) else row[0])
+            rc = str(row["codigo"] if isinstance(row, dict) else row[1]).strip()
+            return rid, rc
+
+        # Valor parece ser o id interno (ex.: 177) em vez do codigo visível (ex.: 1080)
+        if codigo.isdigit():
+            cur.execute(
+                f"SELECT {id_col} AS id, {codigo_col} AS codigo FROM {table} WHERE {id_col} = %s LIMIT 1",
+                (int(codigo),),
+            )
+            by_id = cur.fetchone()
+            if by_id:
+                rid = int(by_id["id"] if isinstance(by_id, dict) else by_id[0])
+                rc = str(
+                    by_id["codigo"] if isinstance(by_id, dict) else by_id[1]
+                ).strip()
+                raise UniplusPermanentError(
+                    "ERR_UNIPLUS_USE_CODIGO_NOT_ID: "
+                    f"informado id interno={rid}; use o codigo visível={rc or '-'} "
+                    "(campo codigo do cadastro UniPlus)"
+                )
+
+    raise UniplusPermanentError(
+        f"ERR_UNIPLUS_PRODUCT_NOT_FOUND: codigo={codigo or '-'} nome={nome or '-'} "
+        "(valide o campo codigo do UniPlus, não o id interno)"
+    )
+
+
+def _blank_hash40() -> str:
+    return " " * 40
+
+
+def _insert_contamesaitem(
+    cur,
+    item_table: str,
+    item_cols: Set[str],
+    *,
+    conta_id: int,
+    numeromesa: int,
+    idproduto: int,
+    codigo: str,
+    nome: str,
+    qty: float,
+    precounitario: float,
+    valortotal: float,
+    observacao: str,
+    protocol_key: str,
+    item_hash: str,
+    data_val: Any,
+    hora_abertura: Any,
+    now: datetime,
+    idunidademedida: int,
+    cnpjfilial: str,
+) -> None:
+    """INSERT item alinhado ao padrão nativo do UniPlus (defaults não-NULL)."""
+    row: Dict[str, Any] = {
+        "idcontamesa": conta_id,
+        "idproduto": idproduto,
+        "quantidade": qty,
+        "precounitario": precounitario,
+        "valortotal": valortotal,
+        "valorliquido": valortotal,
+        "cancelado": 0,
+        "canceladoantesdeconfirmar": 0,
+        "observacao": (observacao or "")[:255],
+        "codigoproduto": codigo[:20],
+        "codigoprodutodigitado": codigo[:20],
+        "nomeproduto": nome,
+        "unidademedida": "UN",
+        "idunidademedida": int(idunidademedida or DEFAULT_IDUNIDADEMEDIDA),
+        "orderidintegracao": protocol_key,
+        "tipointegracao": 0,
+        "confirmado": 1,
+        "hash": item_hash,
+        "hashop": _blank_hash40(),
+        "hashkit": _blank_hash40(),
+        "hashimpressao": 0,
+        "data": data_val,
+        "horaabertura": hora_abertura,
+        "datahoralancamento": now.isoformat(),
+        "currenttimemillis": int(now.timestamp() * 1000),
+        "numeroconta": numeromesa,
+        "decimaisquantidade": 0,
+        "decimaispreco": 2,
+        "imprimir": 1,
+        "kit": 0,
+        "lancamentoautomatico": 0,
+        "mesatransferida": 0,
+        "fatorconversao": 1.0,
+        "descontomanual": 0,
+        "descontopromocao": 0.0,
+        "descontounitario": 0.0,
+        "entregue": 0,
+        "idgrupo": 0,
+        "couvertartistico": 0,
+        "naocobrartaxaservico": 0,
+        "taxaservico": 0,
+        "valortaxaservico": 0.0,
+        "nummaxcombinacao": 0,
+        "pauta": 0,
+        "precoalterado": 1,
+        "prontonaop": 0,
+        "quantidadeimpressa": 0.0,
+        "quantidadepaga": 0.0,
+        "tiporodizio": 0,
+        "truncarpreco": 1,
+        "vendainteiragourmet": 0,
+        "motivocancelamento": "",
+        "supervisorcancelamento": "",
+        "usuariocancelamento": "",
+        "cnpjfilial": (cnpjfilial or "")[:18],
+    }
+
+    cols = [c for c in row.keys() if c in item_cols]
+    if "idcontamesa" not in cols or "idproduto" not in cols:
+        raise RuntimeError(
+            f"ERR_UNIPLUS_SCHEMA: {item_table} sem idcontamesa/idproduto"
+        )
+    values = [row[c] for c in cols]
+    placeholders = ",".join(["%s"] * len(cols))
+    cur.execute(
+        f"INSERT INTO {item_table} ({', '.join(cols)}) VALUES ({placeholders})",
+        tuple(values),
+    )
+
+
+def _money_eq(left, right) -> bool:
+    return abs(float(left or 0) - float(right or 0)) < 0.001
+
+
+def _plan_item_sync(existing_rows: List[Dict[str, Any]], incoming_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Casa itens da conta aberta com o pedido editado.
+
+    Linha igual (produto + observação) é atualizada. Linha nova é inserida.
+    Linha que saiu do pedido é cancelada.
+    """
+    unused: List[Dict[str, Any]] = []
+    for row in existing_rows or []:
+        unused.append(
+            {
+                "id": row.get("id"),
+                "codigo": str(row.get("codigoproduto") or "").strip()[:20].lower(),
+                "nome": str(row.get("nomeproduto") or "").strip()[:120].lower(),
+                "obs": str(row.get("observacao") or "").strip()[:255].lower(),
+                "quantidade": float(row.get("quantidade") or 0),
+                "precounitario": float(row.get("precounitario") or 0),
+                "valortotal": float(row.get("valortotal") or 0),
+            }
+        )
+
+    updates: List[Dict[str, Any]] = []
+    inserts: List[Dict[str, Any]] = []
+    claimed: Set[int] = set()
+    for item in incoming_rows or []:
+        codigo = str(item.get("codigoproduto") or "").strip()[:20].lower()
+        nome = str(item.get("nomeproduto") or "").strip()[:120].lower()
+        obs = str(item.get("observacao") or "").strip()[:255].lower()
+        match_idx = None
+        for index, existing in enumerate(unused):
+            if index in claimed:
+                continue
+            if existing["nome"] != nome or existing["obs"] != obs:
+                continue
+            if codigo and existing["codigo"] and codigo != existing["codigo"]:
+                continue
+            match_idx = index
+            break
+        if match_idx is None:
+            inserts.append(item)
+            continue
+        claimed.add(match_idx)
+        existing = unused[match_idx]
+        qty = float(item.get("quantidade") or 1)
+        preco = float(item.get("precounitario") or 0)
+        total = float(item.get("valortotal") or (preco * qty))
+        if not (
+            _money_eq(existing["quantidade"], qty)
+            and _money_eq(existing["precounitario"], preco)
+            and _money_eq(existing["valortotal"], total)
+        ):
+            updates.append(
+                {
+                    "id": existing["id"],
+                    "quantidade": qty,
+                    "precounitario": preco,
+                    "valortotal": total,
+                }
+            )
+
+    cancel_ids = [
+        existing["id"]
+        for index, existing in enumerate(unused)
+        if index not in claimed and existing["id"] is not None
+    ]
+    return {"updates": updates, "cancel_ids": cancel_ids, "inserts": inserts}
+
+
+def _load_open_item_rows(cur, item_table: str, item_cols: Set[str], conta_id: int) -> List[Dict[str, Any]]:
+    wanted = [
+        "id",
+        "codigoproduto",
+        "nomeproduto",
+        "observacao",
+        "quantidade",
+        "precounitario",
+        "valortotal",
+    ]
+    cols = [col for col in wanted if col in item_cols]
+    if "id" not in cols:
+        return []
+    where = "idcontamesa = %s"
+    if "cancelado" in item_cols:
+        where += " AND COALESCE(cancelado, 0) = 0"
+    cur.execute(
+        f"SELECT {', '.join(cols)} FROM {item_table} WHERE {where} ORDER BY id",
+        (int(conta_id),),
+    )
+    return [dict(row) for row in (cur.fetchall() or [])]
+
+
+def _update_item_amounts(
+    cur,
+    item_table: str,
+    item_cols: Set[str],
+    item_id: int,
+    qty: float,
+    precounitario: float,
+    valortotal: float,
+) -> None:
+    assignments = []
+    values: List[Any] = []
+
+    def add(col: str, value) -> None:
+        if col not in item_cols:
+            return
+        assignments.append(f"{col} = %s")
+        values.append(value)
+
+    add("quantidade", qty)
+    add("precounitario", precounitario)
+    add("valortotal", valortotal)
+    add("valorliquido", valortotal)
+    if not assignments:
+        return
+    values.append(int(item_id))
+    cur.execute(
+        f"UPDATE {item_table} SET {', '.join(assignments)} WHERE id = %s",
+        tuple(values),
+    )
+
+
+def _cancel_item(cur, item_table: str, item_cols: Set[str], item_id: int) -> None:
+    if "cancelado" not in item_cols:
+        cur.execute(f"DELETE FROM {item_table} WHERE id = %s", (int(item_id),))
+        return
+    assignments = ["cancelado = %s"]
+    values: List[Any] = [1]
+    if "canceladoantesdeconfirmar" in item_cols:
+        assignments.append("canceladoantesdeconfirmar = %s")
+        values.append(1)
+    if "motivocancelamento" in item_cols:
+        assignments.append("motivocancelamento = %s")
+        values.append("Alterado no Compuchat")
+    values.append(int(item_id))
+    cur.execute(
+        f"UPDATE {item_table} SET {', '.join(assignments)} WHERE id = %s",
+        tuple(values),
+    )
+
+
+def _insert_payload_item(
+    cur,
+    cfg: Dict[str, Any],
+    item_table: str,
+    item_cols: Set[str],
+    *,
+    conta_id: int,
+    numeromesa: int,
+    item: Dict[str, Any],
+    protocol_key: str,
+    contamesa: Dict[str, Any],
+    now: datetime,
+) -> Dict[str, Any]:
+    codigo = str(item.get("codigoproduto") or "").strip()
+    nome = str(item.get("nomeproduto") or "")[:120]
+    if not codigo and not nome:
+        raise UniplusPermanentError(
+            "ERR_UNIPLUS_PAYLOAD: Item sem codigoproduto/nomeproduto"
+        )
+    idproduto, codigo_resolvido = _resolve_produto_id(cur, cfg, codigo, nome)
+    codigo = str(codigo_resolvido or codigo).strip()
+    if not codigo:
+        raise UniplusPermanentError(
+            f"ERR_UNIPLUS_PRODUCT_NOT_FOUND: nome={nome or '-'}"
+        )
+    qty = float(item.get("quantidade") or 1)
+    precounitario = float(item.get("precounitario") or 0)
+    valortotal = float(item.get("valortotal") or (precounitario * qty))
+    item_hash = _pad_hash(str(item.get("hash") or ""))
+    id_un = _fetch_produto_unidademedida(
+        cur, cfg["produto_table"], cfg["produto_id_column"], idproduto
+    )
+    data_val = contamesa.get("data") or now.date().isoformat()
+    hora_abert = contamesa.get("horaabertura") or now.isoformat()
+    cnpjfilial = str(contamesa.get("cnpjfilial") or "").strip()
+    _insert_contamesaitem(
+        cur,
+        item_table,
+        item_cols,
+        conta_id=conta_id,
+        numeromesa=numeromesa,
+        idproduto=idproduto,
+        codigo=codigo,
+        nome=nome or codigo,
+        qty=qty,
+        precounitario=precounitario,
+        valortotal=valortotal,
+        observacao=_safe_print_text(item.get("observacao")),
+        protocol_key=protocol_key,
+        item_hash=item_hash,
+        data_val=data_val,
+        hora_abertura=hora_abert,
+        now=now,
+        idunidademedida=id_un,
+        cnpjfilial=cnpjfilial,
+    )
+    return {
+        "codigo": codigo[:20],
+        "nome": nome,
+        "idproduto": idproduto,
+        "idunidademedida": id_un,
+        "qtd": qty,
+        "precounitario": precounitario,
+        "total": valortotal,
+        "hash": item_hash if "hash" in item_cols else None,
+    }
+
+
+def _resolve_conta_numeromesa(cur, mesa_table: str, conta_id: int, fallback) -> int:
+    try:
+        if fallback is not None and str(fallback).strip() != "":
+            return int(fallback)
+    except (TypeError, ValueError):
+        pass
+    cur.execute(
+        f"SELECT numeromesa FROM {mesa_table} WHERE id = %s",
+        (int(conta_id),),
+    )
+    row = cur.fetchone()
+    if row and row.get("numeromesa") is not None:
+        return int(row["numeromesa"])
+    return 0
+
+
+def _sync_open_conta_items(
+    cur,
+    cfg: Dict[str, Any],
+    item_table: str,
+    *,
+    conta_id: int,
+    numeromesa,
+    mesa_table: str,
+    contamesa: Dict[str, Any],
+    itens: List[Dict[str, Any]],
+    protocol_key: str,
+    now: datetime,
+) -> Dict[str, Any]:
+    """Reflete adição, alteração de quantidade e remoção na conta aberta."""
+    item_cols = _table_columns(cur, item_table)
+    if "id" not in item_cols:
+        raise RuntimeError(f"ERR_UNIPLUS_SCHEMA: {item_table} sem id para atualizar itens")
+    existing = _load_open_item_rows(cur, item_table, item_cols, conta_id)
+    normalized_itens = []
+    for item in itens or []:
+        cloned = dict(item)
+        cloned["observacao"] = _safe_print_text(item.get("observacao"))
+        normalized_itens.append(cloned)
+    plan = _plan_item_sync(existing, normalized_itens)
+    for update in plan["updates"]:
+        _update_item_amounts(
+            cur,
+            item_table,
+            item_cols,
+            int(update["id"]),
+            float(update["quantidade"]),
+            float(update["precounitario"]),
+            float(update["valortotal"]),
+        )
+    for item_id in plan["cancel_ids"]:
+        _cancel_item(cur, item_table, item_cols, int(item_id))
+    mesa_num = _resolve_conta_numeromesa(cur, mesa_table, conta_id, numeromesa)
+    inserted = []
+    for item in plan["inserts"]:
+        inserted.append(
+            _insert_payload_item(
+                cur,
+                cfg,
+                item_table,
+                item_cols,
+                conta_id=conta_id,
+                numeromesa=mesa_num,
+                item=item,
+                protocol_key=protocol_key,
+                contamesa=contamesa,
+                now=now,
+            )
+        )
+    return {
+        "itens_added": len(plan["inserts"]),
+        "itens_removed": len(plan["cancel_ids"]),
+        "itens_updated": len(plan["updates"]),
+        "itens_count": len(itens or []),
+        "itens_inserted": inserted,
+    }
+
+
+def _summarize_payload(
+    protocol: str,
+    contamesa: Dict[str, Any],
+    itens: list,
+    form_response_id: Any = None,
+) -> Dict[str, Any]:
+    items_summary = []
+    for item in itens:
+        qty = float(item.get("quantidade") or 1)
+        codigo = str(item.get("codigoproduto") or "").strip()
+        nome = str(item.get("nomeproduto") or "").strip()
+        valortotal = float(item.get("valortotal") or 0)
+        items_summary.append(
+            {
+                "codigo": codigo,
+                "nome": nome,
+                "qtd": qty,
+                "total": valortotal,
+            }
+        )
+    return {
+        "protocol": str(protocol)[:40],
+        "formResponseId": form_response_id,
+        "cliente": str(contamesa.get("nomecliente") or "")[:60],
+        "telefone": str(contamesa.get("telefone") or "")[:20],
+        "endereco": " ".join(
+            p
+            for p in [
+                str(contamesa.get("endereco") or "").strip(),
+                str(contamesa.get("endereconumero") or "").strip(),
+                str(contamesa.get("enderecobairro") or "").strip(),
+            ]
+            if p
+        )[:120],
+        "valortotal": float(contamesa.get("valortotal") or 0),
+        "valorentrega": float(contamesa.get("valorentrega") or 0),
+        "itens_count": len(items_summary),
+        "itens": items_summary,
+    }
+
+
+def _next_numeromesa(cur, mesa_table: str, *, open_delivery_only: bool = True) -> int:
+    """
+    Próximo card delivery.
+    open_delivery_only=True: só entre contas abertas tipopedido=0 (comportamento Gourmet).
+    open_delivery_only=False: MAX global — usado no retry após colisão de unique.
+    """
+    if open_delivery_only:
+        cur.execute(
+            f"""
+            SELECT COALESCE(MAX(numeromesa), 0) + 1 AS next_num
+            FROM {mesa_table}
+            WHERE status = 1 AND tipopedido = 0
+            """
+        )
+    else:
+        cur.execute(
+            f"""
+            SELECT COALESCE(MAX(numeromesa), 0) + 1 AS next_num
+            FROM {mesa_table}
+            """
+        )
+    row = cur.fetchone()
+    next_num = int(row["next_num"] if isinstance(row, dict) else row[0])
+    return max(next_num, 1)
+
+
+def _open_conta_by_numeromesa(
+    cur, mesa_table: str, numeromesa: int, tipopedido: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """Conta aberta (status=1) da mesa física."""
+    if tipopedido is None:
+        cur.execute(
+            f"""
+            SELECT id, numeromesa, status, tipopedido
+            FROM {mesa_table}
+            WHERE numeromesa = %s AND status = 1
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(numeromesa),),
+        )
+    else:
+        cur.execute(
+            f"""
+            SELECT id, numeromesa, status, tipopedido
+            FROM {mesa_table}
+            WHERE numeromesa = %s AND status = 1 AND tipopedido = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(numeromesa), int(tipopedido)),
+        )
+    row = cur.fetchone()
+    if not row:
+        return None
+    tp = row.get("tipopedido")
+    try:
+        tp_int = int(tp) if tp is not None else None
+    except (TypeError, ValueError):
+        tp_int = None
+    return {
+        "id": int(row["id"]),
+        "numeromesa": int(row["numeromesa"]) if row.get("numeromesa") is not None else int(numeromesa),
+        "tipopedido": tp_int,
+    }
+
+
+def _fix_mesa_print_fields(cur, mesa_table: str, conta_id: int, contamesa: Dict[str, Any]) -> None:
+    """Limpa obs/nome que quebram a impressão gerencial do Unichef."""
+    cliente = str(
+        contamesa.get("nomecliente") or contamesa.get("nome") or ""
+    ).strip()
+    if " (Mesa " in cliente:
+        cliente = cliente.split(" (Mesa ")[0].strip()
+    try:
+        cur.execute(
+            f"""
+            UPDATE {mesa_table}
+            SET obs = '',
+                nome = CASE
+                    WHEN nome IS NULL OR nome LIKE '%%(Mesa %%' THEN %s
+                    ELSE nome
+                END,
+                nomecliente = CASE
+                    WHEN COALESCE(nomecliente, '') = '' THEN %s
+                    ELSE nomecliente
+                END
+            WHERE id = %s
+              AND (
+                    obs LIKE 'Mesa %%'
+                    OR obs LIKE '%%Compuchat POS-%%'
+                    OR nome LIKE '%%(Mesa %%'
+              )
+            """,
+            (cliente[:60], cliente[:60], int(conta_id)),
+        )
+    except Exception:
+        pass
+
+
+def _bump_conta_totals(cur, mesa_table: str, conta_id: int, add_total: float, now: datetime) -> None:
+    try:
+        cur.execute(
+            f"""
+            UPDATE {mesa_table}
+            SET valortotal = COALESCE(valortotal, 0) + %s,
+                valorcombinado = COALESCE(valorcombinado, 0) + %s,
+                horaultimoconsumo = %s,
+                timestampalteracao = %s
+            WHERE id = %s
+            """,
+            (
+                float(add_total),
+                float(add_total),
+                now.isoformat(),
+                int(now.timestamp() * 1000),
+                int(conta_id),
+            ),
+        )
+    except Exception:
+        pass
+
+
+def _update_open_conta(cur, mesa_table: str, conta_id: int, contamesa: Dict[str, Any], now: datetime) -> None:
+    """Atualiza modalidade, taxa, total e endereço de uma conta aberta."""
+    cols = _table_columns(cur, mesa_table)
+    assignments = []
+    values = []
+
+    def add(col: str, value) -> None:
+        if cols and col not in cols:
+            return
+        assignments.append(f"{col} = %s")
+        values.append(value)
+
+    add("retiradanobalcao", int(contamesa.get("retiradanobalcao") or 0))
+    add("valorentrega", float(contamesa.get("valorentrega") or 0))
+    add("valortotal", float(contamesa.get("valortotal") or 0))
+    add(
+        "valorcombinado",
+        float(contamesa.get("valorcombinado") or contamesa.get("valortotal") or 0),
+    )
+    for pay in (
+        "valordinheiro",
+        "valorcartao",
+        "valorpix",
+        "valorcarteiradigital",
+        "valoroutros",
+        "valorcheque",
+    ):
+        add(pay, float(contamesa.get(pay) or 0))
+    endereco = str(contamesa.get("endereco") or "").strip()
+    if endereco:
+        add("endereco", endereco[:60])
+        add("endereconumero", str(contamesa.get("endereconumero") or "")[:12])
+        add("enderecobairro", str(contamesa.get("enderecobairro") or "")[:255])
+        add("enderecocomplemento", str(contamesa.get("enderecocomplemento") or "")[:255])
+        add("enderecoreferencia", str(contamesa.get("enderecoreferencia") or "")[:255])
+    add(
+        "timestampalteracao",
+        int(contamesa.get("timestampalteracao") or int(now.timestamp() * 1000)),
+    )
+    if not assignments:
+        return
+    values.append(int(conta_id))
+    cur.execute(
+        f"UPDATE {mesa_table} SET {', '.join(assignments)} WHERE id = %s AND status = 1",
+        tuple(values),
+    )
+
+
+def _existing_by_protocol(cur, mesa_table: str, protocol: str, summary: Dict[str, Any]) -> Dict[str, Any]:
+    cur.execute(
+        f"""
+        SELECT id, numeromesa, status
+        FROM {mesa_table}
+        WHERE orderidintegracao = %s
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(protocol)[:40],),
+    )
+    existing = cur.fetchone()
+    if not existing:
+        return None
+    conta_id = int(existing["id"])
+    status = int(existing["status"] if existing.get("status") is not None else -1)
+    numeromesa_existing = (
+        int(existing["numeromesa"])
+        if existing.get("numeromesa") is not None
+        else None
+    )
+    if status != 1:
+        raise UniplusPermanentError(
+            f"ERR_UNIPLUS_PROTOCOL_CLOSED: protocol={protocol} conta={conta_id} status={status}"
+        )
+    return {
+        **summary,
+        "conta_id": conta_id,
+        "numeromesa": numeromesa_existing,
+        "action": "already_exists",
+        "message": "already_exists",
+    }
+
+
+def format_uniplus_log_message(result: Dict[str, Any]) -> str:
+    action = result.get("action") or "?"
+    conta_id = result.get("conta_id")
+    protocol = result.get("protocol") or "?"
+    cliente = result.get("cliente") or "?"
+    total = result.get("valortotal")
+    n_itens = result.get("itens_count") or 0
+    mesa = result.get("numeromesa")
+    mesa_txt = f" mesa={mesa}" if mesa is not None else ""
+    if action == "yoda_mesa":
+        return (
+            f"UniPlus YODA{mesa_txt} protocol={protocol} "
+            f"cliente={cliente} total={total} itens={n_itens}"
+        )
+    if action == "already_exists":
+        return (
+            f"UniPlus REUSO (já existia) conta={conta_id}{mesa_txt} protocol={protocol} "
+            f"cliente={cliente} total={total} itens={n_itens}"
+        )
+    if action == "updated":
+        return (
+            f"UniPlus UPDATE conta={conta_id}{mesa_txt} protocol={protocol} "
+            f"cliente={cliente} total={total} retirada={result.get('retiradanobalcao')} "
+            f"itens={n_itens} +{result.get('itens_added') or 0} "
+            f"-{result.get('itens_removed') or 0} ~{result.get('itens_updated') or 0}"
+        )
+    itens = result.get("itens") or []
+    itens_txt = ", ".join(
+        f"{it.get('qtd')}x {it.get('nome') or it.get('codigo')} (R$ {it.get('total')})"
+        for it in itens[:8]
+    )
+    if len(itens) > 8:
+        itens_txt += f" +{len(itens) - 8} itens"
+    return (
+        f"UniPlus INSERT conta={conta_id}{mesa_txt} protocol={protocol} "
+        f"cliente={cliente} total={total} · {itens_txt}"
+    )
+
+
+def _table_columns(cur, table: str) -> set:
+    """Colunas da tabela no schema atual (lowercase)."""
+    cur.execute(
+        """
+        SELECT lower(column_name) AS col
+        FROM information_schema.columns
+        WHERE lower(table_name) = lower(%s)
+          AND table_schema = current_schema()
+        """,
+        (table,),
+    )
+    rows = cur.fetchall() or []
+    cols = set()
+    for row in rows:
+        if isinstance(row, dict):
+            cols.add(str(row.get("col") or "").lower())
+        else:
+            cols.add(str(row[0]).lower())
+    return cols
+
+
+def _is_undefined_column_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    pgcode = getattr(exc, "pgcode", None)
+    return pgcode == "42703" or "undefined column" in msg or "does not exist" in msg
+
+
+def _insert_contamesa(
+    cur,
+    mesa_table: str,
+    contamesa: Dict[str, Any],
+    protocol_key: str,
+    numeromesa: int,
+    hash_val: str,
+    now: datetime,
+    include_optional: bool,
+    table_cols: Optional[Set[str]] = None,
+) -> int:
+    """INSERT CONTAMESA. include_optional controla statusagendamento/pautaunica."""
+    cliente = str(
+        contamesa.get("nomecliente")
+        or contamesa.get("nome")
+        or "Cliente"
+    )[:60]
+    hora_abert = contamesa.get("horaabertura") or now.isoformat()
+    hora_pedido = contamesa.get("horapedidoefetuado") or hora_abert
+
+    base_cols = [
+        "tipopedido", "status", "situacao", "numeromesa",
+        "idfilial", "idusuario", "idcliente", "codigocliente",
+        "nomecliente", "telefone", "documento",
+        "endereco", "endereconumero", "enderecobairro",
+        "enderecocomplemento", "enderecoreferencia",
+        "valorentrega", "valortotal", "valorcombinado",
+        "valordinheiro", "valorcartao", "valorpix",
+        "valorcarteiradigital", "valoroutros", "valorcheque",
+        "tipointegracao", "nomeintegracao", "orderidintegracao",
+        "hash", "statussinc", "cupomcancelado",
+        "retiradanobalcao", "retirabalcaodepois", "paraviagem",
+        "numeropessoas", "desconto", "obs",
+        "data", "horaabertura", "horaultimoconsumo",
+        "currenttimemillis", "timestampalteracao",
+    ]
+    base_values = [
+        int(contamesa.get("tipopedido") or 0),
+        int(contamesa.get("status") or 1),
+        int(contamesa.get("situacao") or 0),
+        numeromesa,
+        int(contamesa.get("idfilial") or 1),
+        int(contamesa.get("idusuario") or 1),
+        int(contamesa.get("idcliente") or 0),
+        str(contamesa.get("codigocliente") or "")[:14],
+        cliente,
+        str(contamesa.get("telefone") or "")[:20],
+        str(contamesa.get("documento") or "")[:18],
+        str(contamesa.get("endereco") or "")[:60],
+        str(contamesa.get("endereconumero") or "")[:12],
+        str(contamesa.get("enderecobairro") or "")[:255],
+        str(contamesa.get("enderecocomplemento") or "")[:255],
+        str(contamesa.get("enderecoreferencia") or "")[:255],
+        float(contamesa.get("valorentrega") or 0),
+        float(contamesa.get("valortotal") or 0),
+        float(contamesa.get("valorcombinado") or contamesa.get("valortotal") or 0),
+        float(contamesa.get("valordinheiro") or 0),
+        float(contamesa.get("valorcartao") or 0),
+        float(contamesa.get("valorpix") or 0),
+        float(contamesa.get("valorcarteiradigital") or 0),
+        float(contamesa.get("valoroutros") or 0),
+        float(contamesa.get("valorcheque") or 0),
+        int(contamesa.get("tipointegracao") or 0),
+        str(contamesa.get("nomeintegracao") or "")[:64],
+        protocol_key,
+        hash_val,
+        int(contamesa.get("statussinc") or 1),
+        int(contamesa.get("cupomcancelado") or 0),
+        int(contamesa.get("retiradanobalcao") or 0),
+        int(contamesa.get("retirabalcaodepois") or 0),
+        int(contamesa.get("paraviagem") or 0),
+        int(contamesa.get("numeropessoas") or 1),
+        float(contamesa.get("desconto") or 0),
+        _safe_print_text(contamesa.get("obs"), mesa=True),
+        contamesa.get("data") or now.date().isoformat(),
+        hora_abert,
+        contamesa.get("horaultimoconsumo") or hora_abert,
+        int(contamesa.get("currenttimemillis") or int(now.timestamp() * 1000)),
+        int(contamesa.get("timestampalteracao") or int(now.timestamp() * 1000)),
+    ]
+
+    cols = list(base_cols)
+    values = list(base_values)
+
+    # Unico lista delivery pelo campo `nome` (além de nomecliente).
+    known_cols = table_cols or set()
+    if not known_cols or "nome" in known_cols:
+        nome_val = str(contamesa.get("nome") or cliente)
+        if " (Mesa " in nome_val:
+            nome_val = nome_val.split(" (Mesa ")[0].strip()
+        cols.append("nome")
+        values.append(nome_val[:60])
+    if not known_cols or "horapedidoefetuado" in known_cols:
+        cols.append("horapedidoefetuado")
+        values.append(hora_pedido)
+    # Inserção nativa UniPlus usa abertaoffline=1
+    if not known_cols or "abertaoffline" in known_cols:
+        cols.append("abertaoffline")
+        values.append(
+            int(
+                contamesa.get("abertaoffline")
+                if contamesa.get("abertaoffline") is not None
+                else 1
+            )
+        )
+    if (not known_cols or "cnpjfilial" in known_cols) and contamesa.get("cnpjfilial"):
+        cols.append("cnpjfilial")
+        values.append(str(contamesa.get("cnpjfilial") or "")[:18])
+
+    if include_optional:
+        cols.extend(["statusagendamento", "pautaunica"])
+        values.append(int(contamesa.get("statusagendamento") or 3))
+        values.append(
+            int(
+                contamesa.get("pautaunica")
+                if contamesa.get("pautaunica") is not None
+                else 1
+            )
+        )
+
+    placeholders = ",".join(["%s"] * len(values))
+    sql = (
+        f"INSERT INTO {mesa_table} ({', '.join(cols)}) "
+        f"VALUES ({placeholders}) RETURNING id"
+    )
+    cur.execute(sql, tuple(values))
+    row = cur.fetchone()
+    return int(row["id"] if isinstance(row, dict) else row[0])
+
+
+def handle_uniplus_job(db_module, conteudo: Dict[str, Any], http=None) -> Dict[str, Any]:
+    """
+    Insere delivery aberto.
+    Idempotente por orderidintegracao (= protocol Compuchat), com advisory lock.
+    No Servidor PDV, mesa e delivery vão por HTTP e não chegam neste INSERT.
+    """
+    from yoda_gourmet import handle_servidor_pdv_mesa_job, uses_pdv_http_bridge
+
+    if uses_pdv_http_bridge(db_module):
+        if http is None:
+            return handle_servidor_pdv_mesa_job(db_module, conteudo or {})
+        return handle_servidor_pdv_mesa_job(db_module, conteudo or {}, http=http)
+    _refuse_pdv_bridge_sql(db_module)
+    if psycopg2 is None:
+        raise UniplusPermanentError(
+            "ERR_UNIPLUS_CONFIG: psycopg2 não instalado. Rode: pip install psycopg2-binary"
+        )
+
+    cfg = _cfg(db_module)
+    if cfg["enabled"] not in ("true", "1", "yes", "on"):
+        raise UniplusPermanentError("ERR_UNIPLUS_CONFIG: UniPlus desabilitado na config do agente")
+    if not cfg["connection_string"]:
+        raise UniplusPermanentError("ERR_UNIPLUS_CONFIG: uniplus_connection_string não configurada")
+
+    protocol = (
+        conteudo.get("protocol")
+        or (conteudo.get("contamesa") or {}).get("orderidintegracao")
+    )
+    if not protocol:
+        raise UniplusPermanentError("ERR_UNIPLUS_PAYLOAD: sem protocol/orderidintegracao")
+
+    contamesa = conteudo.get("contamesa") or {}
+    itens = conteudo.get("itens") or []
+    if not contamesa or not itens:
+        raise UniplusPermanentError("ERR_UNIPLUS_PAYLOAD: incompleto (contamesa/itens)")
+
+    summary = _summarize_payload(
+        str(protocol),
+        contamesa,
+        itens,
+        form_response_id=conteudo.get("formResponseId"),
+    )
+    summary["table_contamesa"] = cfg["contamesa_table"]
+    summary["table_itens"] = cfg["contamesaitem_table"]
+    mesa_table = cfg["contamesa_table"]
+    item_table = cfg["contamesaitem_table"]
+    now = datetime.now(timezone.utc)
+    protocol_key = str(protocol)[:40]
+
+    conn = _connect(cfg["connection_string"])
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Lock do protocol (idempotência)
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (protocol_key,))
+
+                existing_result = _existing_by_protocol(cur, mesa_table, protocol_key, summary)
+                if existing_result:
+                    if conteudo.get("updateExisting"):
+                        conta_id = int(existing_result["conta_id"])
+                        _update_open_conta(
+                            cur,
+                            mesa_table,
+                            conta_id,
+                            contamesa,
+                            now,
+                        )
+                        item_sync = _sync_open_conta_items(
+                            cur,
+                            cfg,
+                            item_table,
+                            conta_id=conta_id,
+                            numeromesa=existing_result.get("numeromesa"),
+                            mesa_table=mesa_table,
+                            contamesa=contamesa,
+                            itens=itens,
+                            protocol_key=protocol_key,
+                            now=now,
+                        )
+                        existing_result.update(item_sync)
+                        existing_result["action"] = "updated"
+                        existing_result["message"] = "updated"
+                        existing_result["valortotal"] = contamesa.get("valortotal")
+                        existing_result["retiradanobalcao"] = int(
+                            contamesa.get("retiradanobalcao") or 0
+                        )
+                        logger.info(
+                            "UniPlus updated conta=%s protocol=%s retirada=%s total=%s "
+                            "itens=%s added=%s removed=%s qty=%s",
+                            existing_result.get("conta_id"),
+                            protocol_key,
+                            existing_result.get("retiradanobalcao"),
+                            existing_result.get("valortotal"),
+                            existing_result.get("itens_count"),
+                            existing_result.get("itens_added"),
+                            existing_result.get("itens_removed"),
+                            existing_result.get("itens_updated"),
+                        )
+                    else:
+                        logger.info(
+                            "UniPlus already_exists conta=%s mesa=%s protocol=%s",
+                            existing_result.get("conta_id"),
+                            existing_result.get("numeromesa"),
+                            protocol_key,
+                        )
+                    return existing_result
+
+                cols = _table_columns(cur, mesa_table)
+                include_optional = (
+                    "statusagendamento" in cols and "pautaunica" in cols
+                )
+                if not include_optional:
+                    logger.warning(
+                        "UniPlus: colunas statusagendamento/pautaunica ausentes em %s — "
+                        "INSERT sem elas (compatibilidade)",
+                        mesa_table,
+                    )
+
+                hash_val = _pad_hash(str(contamesa.get("hash") or ""))
+                conta_id = None
+                numeromesa = None
+                last_exc = None
+                reused_mesa = False
+
+                order_type = str(
+                    conteudo.get("orderType")
+                    or contamesa.get("orderType")
+                    or ""
+                ).strip().lower()
+                requested_mesa_int = parse_numeromesa(contamesa.get("numeromesa"))
+                if not requested_mesa_int and order_type == "mesa":
+                    requested_mesa_int = parse_numeromesa(conteudo.get("numeromesa"))
+
+                if order_type == "mesa":
+                    try:
+                        mesa_tipopedido = int(contamesa.get("tipopedido") or 0)
+                    except (TypeError, ValueError):
+                        mesa_tipopedido = 0
+                    if mesa_tipopedido == 0:
+                        mesa_tipopedido = configured_mesa_tipopedido(db_module)
+                    contamesa["tipopedido"] = mesa_tipopedido
+
+                if order_type == "mesa" and requested_mesa_int and requested_mesa_int > 0:
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(%s, %s)",
+                        (872014002, int(requested_mesa_int)),
+                    )
+                elif order_type != "mesa":
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (872014001,))
+
+                if order_type == "mesa" and requested_mesa_int and requested_mesa_int > 0:
+                    tipopedido = int(
+                        contamesa.get("tipopedido") or configured_mesa_tipopedido(db_module)
+                    )
+                    open_conta = _open_conta_by_numeromesa(
+                        cur, mesa_table, requested_mesa_int, tipopedido
+                    )
+                    if open_conta:
+                        conta_id = open_conta["id"]
+                        numeromesa = open_conta["numeromesa"]
+                        reused_mesa = True
+                        _fix_mesa_print_fields(cur, mesa_table, conta_id, contamesa)
+
+                for attempt in range(5):
+                    if reused_mesa:
+                        break
+                    cur.execute("SAVEPOINT uniplus_ins")
+                    # Mesa física: usa o número da mesa. Delivery: aloca card.
+                    if order_type == "mesa" and requested_mesa_int and requested_mesa_int > 0:
+                        numeromesa = requested_mesa_int
+                    else:
+                        numeromesa = _next_numeromesa(
+                            cur, mesa_table, open_delivery_only=(attempt == 0)
+                        )
+                    try:
+                        conta_id = _insert_contamesa(
+                            cur,
+                            mesa_table,
+                            contamesa,
+                            protocol_key,
+                            numeromesa,
+                            hash_val,
+                            now,
+                            include_optional=include_optional,
+                            table_cols=cols,
+                        )
+                        cur.execute("RELEASE SAVEPOINT uniplus_ins")
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        cur.execute("ROLLBACK TO SAVEPOINT uniplus_ins")
+
+                        # Schema sem colunas opcionais (se detection falhou)
+                        if include_optional and _is_undefined_column_error(exc):
+                            logger.warning(
+                                "UniPlus: INSERT falhou por coluna ausente (%s). "
+                                "Retentando sem statusagendamento/pautaunica.",
+                                exc,
+                            )
+                            include_optional = False
+                            cur.execute("SAVEPOINT uniplus_ins")
+                            try:
+                                conta_id = _insert_contamesa(
+                                    cur,
+                                    mesa_table,
+                                    contamesa,
+                                    protocol_key,
+                                    numeromesa,
+                                    hash_val,
+                                    now,
+                                    include_optional=False,
+                                    table_cols=cols,
+                                )
+                                cur.execute("RELEASE SAVEPOINT uniplus_ins")
+                                last_exc = None
+                                break
+                            except Exception as exc2:
+                                cur.execute("ROLLBACK TO SAVEPOINT uniplus_ins")
+                                last_exc = exc2
+                                if isinstance(exc2, IntegrityError):
+                                    reused = _existing_by_protocol(
+                                        cur, mesa_table, protocol_key, summary
+                                    )
+                                    if reused:
+                                        return reused
+                                    continue
+                                raise
+
+                        if isinstance(exc, IntegrityError):
+                            reused = _existing_by_protocol(
+                                cur, mesa_table, protocol_key, summary
+                            )
+                            if reused:
+                                return reused
+                            last_exc = exc
+                            logger.warning(
+                                "UniPlus IntegrityError na tentativa %s mesa=%s protocol=%s: %s",
+                                attempt + 1,
+                                numeromesa,
+                                protocol_key,
+                                exc,
+                            )
+                            continue
+                        raise
+
+                if conta_id is None:
+                    raise last_exc or RuntimeError(
+                        "ERR_UNIPLUS_INSERT: falha ao inserir CONTAMESA"
+                    )
+
+                item_cols = _table_columns(cur, item_table)
+
+                inserted_items = []
+                for item in itens:
+                    inserted_items.append(
+                        _insert_payload_item(
+                            cur,
+                            cfg,
+                            item_table,
+                            item_cols,
+                            conta_id=conta_id,
+                            numeromesa=numeromesa,
+                            item=item,
+                            protocol_key=protocol_key,
+                            contamesa=contamesa,
+                            now=now,
+                        )
+                    )
+
+                if reused_mesa:
+                    add_total = sum(float(it.get("total") or 0) for it in inserted_items)
+                    _bump_conta_totals(cur, mesa_table, conta_id, add_total, now)
+
+                result = {
+                    **summary,
+                    "conta_id": conta_id,
+                    "numeromesa": numeromesa,
+                    "action": "appended" if reused_mesa else "created",
+                    "message": "appended" if reused_mesa else "created",
+                    "itens": inserted_items,
+                    "itens_count": len(inserted_items),
+                }
+                logger.info(
+                    "UniPlus INSERT conta=%s mesa=%s protocol=%s cliente=%s itens=%s total=%s",
+                    conta_id,
+                    numeromesa,
+                    protocol_key,
+                    summary.get("cliente"),
+                    len(inserted_items),
+                    summary.get("valortotal"),
+                )
+                return result
+    finally:
+        conn.close()

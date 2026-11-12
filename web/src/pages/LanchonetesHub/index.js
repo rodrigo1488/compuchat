@@ -1,0 +1,1234 @@
+import React, { useState, useEffect, useContext, useRef } from "react";
+import { useHistory, useLocation } from "react-router-dom";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { SocketContext } from "../../context/Socket/SocketContext";
+import { makeStyles } from "@material-ui/core/styles";
+import {
+  Box,
+  Typography,
+  Tabs,
+  Tab,
+  Paper,
+  Button,
+  Card,
+  CardContent,
+  Grid,
+  CircularProgress,
+  Badge,
+  IconButton,
+  Tooltip,
+  TextField,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemSecondaryAction,
+} from "@material-ui/core";
+import {
+  Restaurant as RestaurantIcon,
+  ShoppingCart as ShoppingCartIcon,
+  Description as DescriptionIcon,
+  EventSeat as EventSeatIcon,
+  Assignment as AssignmentIcon,
+  Link as LinkIcon,
+  LocalShipping as LocalShippingIcon,
+  People as PeopleIcon,
+  Kitchen as KitchenIcon,
+  Receipt as ReceiptIcon,
+  GetApp as GetAppIcon,
+  } from "@material-ui/icons";
+import { QrCode2 as QrCodeScannerIcon } from "@mui/icons-material";
+import useSound from "use-sound";
+import alertSound from "../../assets/sound.mp3";
+import QRCode from "qrcode.react";
+import MainContainer from "../../components/MainContainer";
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
+import { toast } from "react-toastify";
+import useCompanyModules from "../../hooks/useCompanyModules";
+import { i18n } from "../../translate/i18n";
+import Products from "../Products";
+import Mesas from "../Mesas";
+import Pedidos from "../Pedidos";
+import QuickScanModal from "../../components/QuickScanModal";
+import LineChartComponent from "../../components/Dashboard/LineChartComponent";
+import BarChartComponent from "../../components/Dashboard/BarChartComponent";
+import TrendingUpIcon from "@material-ui/icons/TrendingUp";
+import AttachMoneyIcon from "@material-ui/icons/AttachMoney";
+import AccountBalanceWalletIcon from "@material-ui/icons/AccountBalanceWallet";
+import AssessmentIcon from "@material-ui/icons/Assessment";
+import BarChartIcon from "@material-ui/icons/BarChart";
+import DespesasModal from "../../components/DespesasModal";
+import RelatorioProdutosModal from "../../components/RelatorioProdutosModal";
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    display: "flex",
+    flexDirection: "column",
+    height: "100%",
+  },
+  tabs: {
+    borderBottom: `1px solid ${theme.palette.divider}`,
+    marginBottom: theme.spacing(2),
+    overflowX: "auto",
+    flexShrink: 0,
+    "& .MuiTabs-flexContainer": {
+      flexWrap: "nowrap",
+    },
+  },
+  tabPanel: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+  },
+  welcomeCard: {
+    padding: theme.spacing(3),
+    marginBottom: theme.spacing(2),
+    background: theme.palette.type === "dark"
+      ? "linear-gradient(135deg, rgba(245,158,11,0.15) 0%, rgba(251,191,36,0.05) 100%)"
+      : "linear-gradient(135deg, rgba(245,158,11,0.08) 0%, rgba(251,191,36,0.03) 100%)",
+    borderLeft: `4px solid ${theme.palette.primary.main}`,
+  },
+  statCard: {
+    height: "100%",
+  },
+  vendasCard: {
+    height: "100%",
+    borderLeft: `4px solid ${theme.palette.primary.main}`,
+  },
+  chartCard: {
+    minHeight: 280,
+  },
+  upcomingExpensesCard: {
+    padding: theme.spacing(3),
+    borderRadius: theme.spacing(2),
+    backgroundColor: theme.palette.type === "dark" ? "#1E293B" : "#FFFFFF",
+    border: `1px solid ${theme.palette.type === "dark" ? "#334155" : "#E5E7EB"}`,
+    height: "100%",
+    minHeight: 280,
+    boxShadow:
+      theme.palette.type === "dark"
+        ? "0 1px 3px 0 rgba(0, 0, 0, 0.3)"
+        : "0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)",
+    display: "flex",
+    flexDirection: "column",
+  },
+  upcomingTitle: {
+    fontWeight: 600,
+    fontSize: "0.875rem",
+    color: theme.palette.text.primary,
+    lineHeight: 1.2,
+    marginBottom: theme.spacing(0.5),
+  },
+  upcomingSubtitle: {
+    fontSize: "0.75rem",
+    color: theme.palette.text.secondary,
+    lineHeight: 1.5,
+    fontWeight: 400,
+    marginBottom: theme.spacing(2),
+  },
+  quickLink: {
+    textDecoration: "none",
+    color: "inherit",
+  },
+}));
+
+/** Só vencimento hoje ou futuro — não lista contas já vencidas no passado. */
+const apenasDespesasProximas = (lista) => {
+  if (!Array.isArray(lista)) return [];
+  const now = new Date();
+  const hoje = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return lista.filter((d) => {
+    const key = d.dataVencimento != null ? String(d.dataVencimento).slice(0, 10) : "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(key) && key >= hoje;
+  });
+};
+
+const PAYMENT_METHOD_LABELS = {
+  pix: "PIX",
+  dinheiro: "Dinheiro",
+  cartao: "Cartão",
+  carteira_digital: "Carteira digital",
+  outro: "Outro",
+};
+
+const formatPaymentMethodLabel = (metodo) =>
+  PAYMENT_METHOD_LABELS[String(metodo || "outro").toLowerCase()] || String(metodo || "Outro");
+
+const buildStatsDateParams = (filtroInicial, filtroFinal) => {
+  const params = {};
+  if (filtroInicial) params.initialDate = filtroInicial;
+  if (filtroFinal) params.finalDate = filtroFinal;
+  if (!filtroInicial || !filtroFinal) {
+    const now = new Date();
+    const localEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const start = new Date(now);
+    start.setDate(start.getDate() - 29);
+    const localStart = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+    if (!filtroInicial) params.initialDate = localStart;
+    if (!filtroFinal) params.finalDate = localEnd;
+  }
+  return params;
+};
+
+const downloadLanchonetesExport = async (type, filtroInicial, filtroFinal) => {
+  const params = { ...buildStatsDateParams(filtroInicial, filtroFinal), type };
+  const response = await api.get("/dashboard/lanchonetes-export", {
+    params,
+    responseType: "blob",
+  });
+  const blob = new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const prefix = type === "entregador" ? "entregas-por-entregador" : "faturamento-por-pagamento";
+  link.href = url;
+  link.setAttribute("download", `${prefix}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+};
+
+const LanchonetesHub = () => {
+  const classes = useStyles();
+  const history = useHistory();
+  const location = useLocation();
+  const { user } = useContext(AuthContext);
+  const socketManager = useContext(SocketContext);
+  const { hasLanchonetes, loading: modulesLoading } = useCompanyModules();
+  const params = new URLSearchParams(location.search);
+  const tabFromUrl = parseInt(params.get("tab"), 10);
+  const [tabValue, setTabValue] = useState(
+    !isNaN(tabFromUrl) && tabFromUrl >= 0 && tabFromUrl <= 8 ? tabFromUrl : 0
+  );
+  const [cardapioForms, setCardapioForms] = useState([]);
+  const [ordersStats, setOrdersStats] = useState({ pedidosHoje: 0, mesasOcupadas: 0 });
+  const [unconfirmedCounts, setUnconfirmedCounts] = useState({ mesa: 0, delivery: 0 });
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [lanchonetesStats, setLanchonetesStats] = useState({
+    totalVendasDia: 0,
+    totalVendasMes: 0,
+    totalDespesas: 0,
+    saldoGeral: 0,
+    evolucaoVendas: [],
+    evolucaoDespesas: [],
+    entregasPorEntregador: [],
+    faturamentoPorMeioPagamento: [],
+  });
+  const [loadingLanchonetesStats, setLoadingLanchonetesStats] = useState(false);
+  const [filtroInicial, setFiltroInicial] = useState("");
+  const [filtroFinal, setFiltroFinal] = useState("");
+  const [quickScanOpen, setQuickScanOpen] = useState(false);
+  const [despesasModalOpen, setDespesasModalOpen] = useState(false);
+  const [relatorioProdutosOpen, setRelatorioProdutosOpen] = useState(false);
+  const [proximasDespesas, setProximasDespesas] = useState([]);
+  const [loadingProximasDespesas, setLoadingProximasDespesas] = useState(false);
+  const pendingOrderIdsRef = useRef(new Set());
+  const soundIntervalRef = useRef(null);
+  const [playOrderAlert] = useSound(alertSound, { volume: 0.6 });
+
+  useEffect(() => {
+    if (!hasLanchonetes && !modulesLoading) {
+      history.push("/dashboard");
+    }
+  }, [hasLanchonetes, modulesLoading, history]);
+
+  useEffect(() => {
+    const p = new URLSearchParams(location.search);
+    const t = parseInt(p.get("tab"), 10);
+    if (!isNaN(t) && t >= 0 && t <= 8) setTabValue(t);
+  }, [location.search]);
+
+  const handleTabChange = (_, v, formIdOverride) => {
+    setTabValue(v);
+    const formId = formIdOverride ?? params.get("formId");
+    const newSearch = formId ? `?tab=${v}&formId=${formId}` : (v > 0 ? `?tab=${v}` : "");
+    history.replace(`/lanchonetes${newSearch}`);
+  };
+
+  const fetchUnconfirmedCounts = React.useCallback(async () => {
+    try {
+      const { data } = await api.get("/orders/unconfirmed-counts");
+      setUnconfirmedCounts({ mesa: data.mesa ?? 0, delivery: data.delivery ?? 0 });
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    if (!hasLanchonetes) return;
+    const fetchData = async () => {
+      setLoadingStats(true);
+      try {
+        const [formsRes, ordersRes, mesasRes, countsRes] = await Promise.all([
+          api.get("/forms?formType=cardapio"),
+          api.get("/orders"),
+          api.get("/mesas").catch(() => ({ data: [] })),
+          api.get("/orders/unconfirmed-counts").catch(() => ({ data: { mesa: 0, delivery: 0 } })),
+        ]);
+        setCardapioForms(formsRes.data.forms || []);
+        const orders = ordersRes.data.orders || [];
+        const today = new Date().toDateString();
+        const pedidosHoje = orders.filter(
+          (o) => new Date(o.submittedAt).toDateString() === today
+        ).length;
+        const mesas = Array.isArray(mesasRes.data) ? mesasRes.data : [];
+        const mesasOcupadas = mesas.filter((m) => m.status === "ocupada").length;
+        setOrdersStats({ pedidosHoje, mesasOcupadas });
+        setUnconfirmedCounts({ mesa: countsRes.data?.mesa ?? 0, delivery: countsRes.data?.delivery ?? 0 });
+      } catch (err) {
+        toastError(err);
+      } finally {
+        setLoadingStats(false);
+      }
+    };
+    fetchData();
+  }, [hasLanchonetes]);
+
+  useEffect(() => {
+    if (!hasLanchonetes) return;
+    setLoadingLanchonetesStats(true);
+    const params = {};
+    if (filtroInicial) params.initialDate = filtroInicial;
+    if (filtroFinal) params.finalDate = filtroFinal;
+    if (!filtroInicial || !filtroFinal) {
+      const now = new Date();
+      const localEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const start = new Date(now);
+      start.setDate(start.getDate() - 29);
+      const localStart = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+      if (!filtroInicial) params.initialDate = localStart;
+      if (!filtroFinal) params.finalDate = localEnd;
+    }
+    api
+      .get("/dashboard/lanchonetes-stats", { params })
+      .then(({ data }) => {
+        const fallback = { totalVendasDia: 0, totalVendasMes: 0, totalDespesas: 0, saldoGeral: 0, evolucaoVendas: [], evolucaoDespesas: [], entregasPorEntregador: [], faturamentoPorMeioPagamento: [] };
+        setLanchonetesStats({ ...fallback, ...data });
+      })
+      .catch(() => setLanchonetesStats({ totalVendasDia: 0, totalVendasMes: 0, totalDespesas: 0, saldoGeral: 0, evolucaoVendas: [], evolucaoDespesas: [], entregasPorEntregador: [], faturamentoPorMeioPagamento: [] }))
+      .finally(() => setLoadingLanchonetesStats(false));
+  }, [hasLanchonetes, filtroInicial, filtroFinal]);
+
+  useEffect(() => {
+    if (!hasLanchonetes) return;
+    let cancelled = false;
+    setLoadingProximasDespesas(true);
+    api
+      .get("/despesas", { params: { proximas: 1, limit: 8 } })
+      .then(({ data }) => {
+        if (!cancelled) setProximasDespesas(apenasDespesasProximas(Array.isArray(data) ? data : []));
+      })
+      .catch(() => {
+        if (!cancelled) setProximasDespesas([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingProximasDespesas(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasLanchonetes]);
+
+  useEffect(() => {
+    const companyId = user?.companyId;
+    const socket = companyId ? socketManager?.getSocket?.(companyId) : null;
+    if (!socket) return;
+    const refreshStats = async () => {
+      try {
+        const [ordersRes, mesasRes] = await Promise.all([
+          api.get("/orders"),
+          api.get("/mesas").catch(() => ({ data: [] })),
+        ]);
+        const orders = ordersRes.data?.orders || [];
+        const today = new Date().toDateString();
+        const pedidosHoje = orders.filter(
+          (o) => new Date(o.submittedAt).toDateString() === today
+        ).length;
+        const mesas = Array.isArray(mesasRes.data) ? mesasRes.data : [];
+        const mesasOcupadas = mesas.filter((m) => m.status === "ocupada").length;
+        setOrdersStats((prev) => ({ ...prev, pedidosHoje, mesasOcupadas }));
+      } catch (_) {}
+    };
+    socket.on(`company-${companyId}-mesa`, refreshStats);
+    return () => socket.off(`company-${companyId}-mesa`, refreshStats);
+  }, [socketManager, user?.companyId]);
+
+  // Notificações de pedidos: badges + som persistente até confirmado
+  useEffect(() => {
+    const companyId = user?.companyId;
+    const socket = companyId ? socketManager?.getSocket?.(companyId) : null;
+    if (!socket) return;
+
+    const stopSoundLoop = () => {
+      if (soundIntervalRef.current) {
+        clearInterval(soundIntervalRef.current);
+        soundIntervalRef.current = null;
+      }
+    };
+
+    const startSoundLoop = () => {
+      if (soundIntervalRef.current) return;
+      playOrderAlert();
+      soundIntervalRef.current = setInterval(() => {
+        if (pendingOrderIdsRef.current.size === 0) {
+          stopSoundLoop();
+          return;
+        }
+        playOrderAlert();
+      }, 30000);
+    };
+
+    const onFormResponse = (payload) => {
+      const { action, response } = payload || {};
+      if (!response || !response.id) return;
+      const status = response.orderStatus || response.metadata?.orderStatus || "novo";
+      const orderType = response.metadata?.orderType === "delivery" ? "delivery" : "mesa";
+
+      if (action === "create" && status === "novo") {
+        pendingOrderIdsRef.current.add(response.id);
+        setUnconfirmedCounts((prev) => ({
+          ...prev,
+          [orderType]: prev[orderType] + 1,
+        }));
+        startSoundLoop();
+      } else if (action === "update") {
+        // Badge atualiza quando o pedido sai de "novo" (confirmado, preparando, saiu_entrega, entregue, etc.)
+        if (status !== "novo" && status != null) {
+          pendingOrderIdsRef.current.delete(response.id);
+          setUnconfirmedCounts((prev) => ({
+            ...prev,
+            [orderType]: Math.max(0, prev[orderType] - 1),
+          }));
+          if (pendingOrderIdsRef.current.size === 0) stopSoundLoop();
+        }
+      }
+      fetchUnconfirmedCounts();
+      api.get("/dashboard/lanchonetes-stats")
+        .then(({ data }) => setLanchonetesStats(data || { totalVendasDia: 0, totalVendasMes: 0, evolucaoVendas: [], entregasPorEntregador: [] }))
+        .catch(() => {});
+    };
+
+    socket.on(`company-${companyId}-formResponse`, onFormResponse);
+    return () => {
+      socket.off(`company-${companyId}-formResponse`, onFormResponse);
+      stopSoundLoop();
+    };
+  }, [socketManager, user?.companyId, fetchUnconfirmedCounts, playOrderAlert]);
+
+  const handleCopyLink = (link) => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(link);
+      toast.success("Link copiado!");
+    }
+  };
+
+  if (!hasLanchonetes && !modulesLoading) return null;
+
+  return (
+    <MainContainer>
+      <Box className={classes.root}>
+        <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" style={{ marginBottom: 16 }}>
+          <Typography variant="h5" style={{ fontWeight: 600 }}>
+            {i18n.t("lanchonetes.hubName")}
+          </Typography>
+          <Tooltip title="Escanear QR Code (garçom, cozinha, etc.)">
+            <IconButton
+              color="primary"
+              onClick={() => setQuickScanOpen(true)}
+              aria-label="Ação rápida - escanear QR"
+            >
+              <QrCodeScannerIcon />
+            </IconButton>
+          </Tooltip>
+        </Box>
+
+        <Tabs
+          value={tabValue}
+          onChange={handleTabChange}
+          className={classes.tabs}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          <Tab label="Início" icon={<RestaurantIcon />} />
+          <Tab label="Produtos" icon={<ShoppingCartIcon />} />
+          <Tab label="Cardápio" icon={<DescriptionIcon />} />
+          <Tab label="Mesas" icon={<EventSeatIcon />} />
+          <Tab
+            label={
+              <Badge badgeContent={unconfirmedCounts.mesa} color="error">
+                <span style={{ marginRight: unconfirmedCounts.mesa ? 8 : 0 }}>Pedidos (Mesa)</span>
+              </Badge>
+            }
+            icon={<EventSeatIcon />}
+          />
+          <Tab
+            label={
+              <Badge badgeContent={unconfirmedCounts.delivery} color="error">
+                <span style={{ marginRight: unconfirmedCounts.delivery ? 8 : 0 }}>Delivery</span>
+              </Badge>
+            }
+            icon={<LocalShippingIcon />}
+          />
+          <Tab label="Garçons" icon={<PeopleIcon />} />
+          <Tab label="Entregador" icon={<LocalShippingIcon />} />
+          <Tab label="Cozinha" icon={<KitchenIcon />} />
+        </Tabs>
+
+        <Box className={classes.tabPanel}>
+          {tabValue === 0 && (
+            <>
+              <Paper className={classes.welcomeCard}>
+                <Typography variant="h6" gutterBottom>
+                  {i18n.t("lanchonetes.hubWelcome")}
+                </Typography>
+                <Typography variant="body2" color="textSecondary">
+                  {i18n.t("lanchonetes.hubWelcomeSubtitle")}
+                </Typography>
+              </Paper>
+
+              <Typography variant="h6" style={{ marginBottom: 16, marginTop: 8 }}>
+                Acesso rápido
+              </Typography>
+              <Grid container spacing={2} style={{ marginBottom: 24 }}>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 4)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Pedidos mesa
+                      </Typography>
+                      <Typography variant="h4">{loadingStats ? "—" : ordersStats.pedidosHoje}</Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver pedidos mesa
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 3)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Mesas ocupadas
+                      </Typography>
+                      <Typography variant="h4">{loadingStats ? "—" : ordersStats.mesasOcupadas}</Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver mesas
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 1)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Produtos
+                      </Typography>
+                      <Typography variant="body2">
+                        Cadastre itens do cardápio
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Gerenciar
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 5)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Delivery
+                      </Typography>
+                      <Typography variant="body2">
+                        Pedidos para entrega
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver pedidos
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 6)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Garçons
+                      </Typography>
+                      <Typography variant="body2">
+                        Tela de pedidos para garçons
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver QR Code
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 2)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Cardápio
+                      </Typography>
+                      <Typography variant="body2">
+                        Link para clientes pedirem
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver links
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleTabChange(null, 8)}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        Cozinha
+                      </Typography>
+                      <Typography variant="body2">
+                        Tela de pedidos para a cozinha
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver QR Code
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => history.push("/pdv")}
+                  >
+                    <CardContent>
+                      <Typography color="textSecondary" gutterBottom>
+                        PDV
+                      </Typography>
+                      <Typography variant="body2">
+                        Fechar contas (mesas e comandas)
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Abrir PDV
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card
+                    className={classes.statCard}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setRelatorioProdutosOpen(true)}
+                  >
+                    <CardContent>
+                      <Box display="flex" alignItems="center" justifyContent="space-between">
+                        <Typography color="textSecondary" gutterBottom>
+                          Relatório de Produtos
+                        </Typography>
+                        <BarChartIcon style={{ color: "rgba(59,130,246,0.7)" }} />
+                      </Box>
+                      <Typography variant="body2">
+                        Produtos vendidos no período
+                      </Typography>
+                      <Button size="small" color="primary" style={{ marginTop: 8 }}>
+                        Ver relatório
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+
+              <Typography variant="h6" style={{ marginBottom: 16 }}>
+                Vendas e estatísticas
+              </Typography>
+              {loadingLanchonetesStats ? (
+                <Box display="flex" justifyContent="center" py={2}>
+                  <CircularProgress size={32} />
+                </Box>
+              ) : (
+                <Grid container spacing={2} style={{ marginBottom: 24 }}>
+                  <Grid item xs={12}>
+                    <Paper style={{ padding: 12 }}>
+                      <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" style={{ gap: 12 }}>
+                        <Typography variant="subtitle2" color="textSecondary">
+                          Filtro de período (opcional)
+                        </Typography>
+                        <Box display="flex" alignItems="center" flexWrap="wrap" style={{ gap: 12 }}>
+                          <TextField
+                            type="date"
+                            size="small"
+                            variant="outlined"
+                            label="Início"
+                            InputLabelProps={{ shrink: true }}
+                            value={filtroInicial}
+                            onChange={(e) => setFiltroInicial(e.target.value)}
+                          />
+                          <TextField
+                            type="date"
+                            size="small"
+                            variant="outlined"
+                            label="Fim"
+                            InputLabelProps={{ shrink: true }}
+                            value={filtroFinal}
+                            onChange={(e) => setFiltroFinal(e.target.value)}
+                          />
+                          <Button size="small" variant="outlined" onClick={() => { setFiltroInicial(""); setFiltroFinal(""); }}>
+                            Limpar
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<GetAppIcon />}
+                            onClick={async () => {
+                              try {
+                                await downloadLanchonetesExport("pagamento", filtroInicial, filtroFinal);
+                              } catch (err) {
+                                toastError(err);
+                              }
+                            }}
+                          >
+                            Exportar pagamentos
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<GetAppIcon />}
+                            onClick={async () => {
+                              try {
+                                await downloadLanchonetesExport("entregador", filtroInicial, filtroFinal);
+                              } catch (err) {
+                                toastError(err);
+                              }
+                            }}
+                          >
+                            Exportar entregadores
+                          </Button>
+                        </Box>
+                      </Box>
+                    </Paper>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Card className={`${classes.statCard} ${classes.vendasCard}`}>
+                      <CardContent>
+                        <Box display="flex" alignItems="center" justifyContent="space-between">
+                          <Box>
+                            <Typography color="textSecondary" gutterBottom>
+                              Vendas hoje
+                            </Typography>
+                            <Typography variant="h4">
+                              R$ {(lanchonetesStats.totalVendasDia ?? 0).toFixed(2).replace(".", ",")}
+                            </Typography>
+                          </Box>
+                          <AttachMoneyIcon style={{ fontSize: 40, color: "rgba(34, 197, 94, 0.8)" }} />
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Card className={`${classes.statCard} ${classes.vendasCard}`}>
+                      <CardContent>
+                        <Box display="flex" alignItems="center" justifyContent="space-between">
+                          <Box>
+                            <Typography color="textSecondary" gutterBottom>
+                              Vendas do mês
+                            </Typography>
+                            <Typography variant="h4">
+                              R$ {(lanchonetesStats.totalVendasMes ?? 0).toFixed(2).replace(".", ",")}
+                            </Typography>
+                          </Box>
+                          <TrendingUpIcon style={{ fontSize: 40, color: "rgba(59, 130, 246, 0.8)" }} />
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Card className={`${classes.statCard} ${classes.vendasCard}`}>
+                      <CardContent>
+                        <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap">
+                          <Box>
+                            <Typography color="textSecondary" gutterBottom>
+                              Total de despesas
+                            </Typography>
+                            <Typography variant="h4">
+                              R$ {(lanchonetesStats.totalDespesas ?? 0).toFixed(2).replace(".", ",")}
+                            </Typography>
+                            <Button size="small" color="primary" onClick={() => setDespesasModalOpen(true)} style={{ marginTop: 8 }}>
+                              Ver mais
+                            </Button>
+                          </Box>
+                          <AccountBalanceWalletIcon style={{ fontSize: 40, color: "rgba(239, 68, 68, 0.8)" }} />
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Card className={`${classes.statCard} ${classes.vendasCard}`}>
+                      <CardContent>
+                        <Box display="flex" alignItems="center" justifyContent="space-between">
+                          <Box>
+                            <Typography color="textSecondary" gutterBottom>
+                              Saldo geral
+                            </Typography>
+                            <Typography variant="h4" style={{ color: (lanchonetesStats.saldoGeral ?? 0) >= 0 ? undefined : "rgba(239, 68, 68, 0.9)" }}>
+                              R$ {(lanchonetesStats.saldoGeral ?? 0).toFixed(2).replace(".", ",")}
+                            </Typography>
+                          </Box>
+                          <AssessmentIcon style={{ fontSize: 40, color: "rgba(139, 92, 246, 0.8)" }} />
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} md={6} className={classes.chartCard}>
+                    <LineChartComponent
+                      data={(() => {
+                        const despMap = new Map(
+                          (lanchonetesStats.evolucaoDespesas || []).map((d) => [d.data, Number(d.total || 0)])
+                        );
+                        return (lanchonetesStats.evolucaoVendas || []).map((ev) => ({
+                          data: new Date(ev.data + "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+                          total: ev.total,
+                          despesas: despMap.get(ev.data) || 0,
+                        }));
+                      })()}
+                      title="Vendas nos últimos 30 dias"
+                      subtitle="Receitas (verde/azul) e despesas (vermelho) por dia"
+                      dataKey="total"
+                      secondaryDataKey="despesas"
+                      secondaryColor="#EF4444"
+                      secondaryName="Despesas"
+                      xAxisKey="data"
+                      color="#22C55E"
+                      gradient
+                      formatCurrency
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={6} className={classes.chartCard}>
+                    <BarChartComponent
+                      data={(lanchonetesStats.entregasPorEntregador || []).map((e) => ({
+                        name: e.nome || "Sem nome",
+                        count: e.quantidade,
+                      }))}
+                      title="Entregas concluídas por entregador"
+                      subtitle="Quantidade de pedidos entregues"
+                      horizontal
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={6} className={classes.chartCard}>
+                    <BarChartComponent
+                      data={(lanchonetesStats.faturamentoPorMeioPagamento || []).map((m) => ({
+                        name: formatPaymentMethodLabel(m.metodo),
+                        count: Number(m.total || 0),
+                      }))}
+                      title="Faturamento por meio de pagamento"
+                      subtitle="Total em R$ (últimos 30 dias ou filtro)"
+                      valueLabel="R$"
+                      valueFormatter={(v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`}
+                      horizontal
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={6} className={classes.chartCard}>
+                    <Paper className={classes.upcomingExpensesCard} elevation={0}>
+                      <Typography className={classes.upcomingTitle}>Próximas despesas a vencer</Typography>
+                      <Typography className={classes.upcomingSubtitle}>
+                        Vencimento a partir de hoje — contas já vencidas não aparecem aqui
+                      </Typography>
+                      {loadingProximasDespesas ? (
+                        <Box display="flex" justifyContent="center" alignItems="center" flex={1} minHeight={180}>
+                          <CircularProgress size={32} />
+                        </Box>
+                      ) : proximasDespesas.length === 0 ? (
+                        <Box flex={1} display="flex" flexDirection="column" justifyContent="center" minHeight={160}>
+                          <Typography variant="body2" color="textSecondary">
+                            Nenhuma despesa futura cadastrada.
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <List dense disablePadding style={{ flex: 1, overflow: "auto", maxHeight: 220 }}>
+                          {proximasDespesas.map((d) => (
+                            <ListItem key={d.id} disableGutters style={{ paddingTop: 4, paddingBottom: 4 }}>
+                              <ListItemText
+                                primary={d.descricao || "Sem descrição"}
+                                secondary={
+                                  [
+                                    d.fornecedor ? `Fornecedor: ${d.fornecedor}` : null,
+                                    d.dataVencimento
+                                      ? `Vence em ${new Date(`${d.dataVencimento}T12:00:00`).toLocaleDateString("pt-BR")}`
+                                      : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ") || null
+                                }
+                                primaryTypographyProps={{ variant: "body2", noWrap: true }}
+                                secondaryTypographyProps={{ variant: "caption" }}
+                              />
+                              <ListItemSecondaryAction>
+                                <Typography
+                                  variant="body2"
+                                  style={{ color: "#EF4444", fontWeight: 500, paddingRight: 4 }}
+                                >
+                                  R$ {Number(d.valor || 0).toFixed(2).replace(".", ",")}
+                                </Typography>
+                              </ListItemSecondaryAction>
+                            </ListItem>
+                          ))}
+                        </List>
+                      )}
+                      <Box mt="auto" pt={1}>
+                        <Button size="small" color="primary" onClick={() => setDespesasModalOpen(true)}>
+                          Ver todas as despesas
+                        </Button>
+                      </Box>
+                    </Paper>
+                  </Grid>
+                </Grid>
+              )}
+
+              {cardapioForms.length > 0 && (
+                <Box mt={3}>
+                  <Typography variant="subtitle1" gutterBottom>
+                    Links do cardápio
+                  </Typography>
+                  {cardapioForms.map((form) => {
+                    const link = `${window.location.origin}/f/${form.publicId}`;
+                    return (
+                      <Paper
+                        key={form.id}
+                        style={{
+                          padding: 16,
+                          marginBottom: 8,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          flexWrap: "wrap",
+                          gap: 8,
+                        }}
+                      >
+                        <Box>
+                          <Typography variant="subtitle2">{form.name}</Typography>
+                          <Typography variant="caption" color="textSecondary" noWrap style={{ maxWidth: 280, display: "block" }}>
+                            {link}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Button
+                            size="small"
+                            startIcon={<LinkIcon />}
+                            onClick={() => handleCopyLink(link)}
+                          >
+                            Copiar link
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() => history.push(`/forms/${form.id}`)}
+                          >
+                            Editar
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() => handleTabChange(null, 4, form.id)}
+                          >
+                            Mesa
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() => handleTabChange(null, 5, form.id)}
+                          >
+                            Delivery
+                          </Button>
+                        </Box>
+                      </Paper>
+                    );
+                  })}
+                </Box>
+              )}
+            </>
+          )}
+
+          {tabValue === 1 && <Products />}
+          {tabValue === 2 && (
+            <Box>
+              <Typography variant="h6" gutterBottom>
+                {i18n.t("lanchonetes.cardapiosSection")}
+              </Typography>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
+                {i18n.t("lanchonetes.cardapiosDescription")}
+              </Typography>
+              {cardapioForms.length === 0 ? (
+                <Paper style={{ padding: 32, textAlign: "center" }}>
+                  <Typography color="textSecondary">
+                    {i18n.t("lanchonetes.cardapiosEmpty")}
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    style={{ marginTop: 16 }}
+                    onClick={() => history.push("/forms/new")}
+                  >
+                    {i18n.t("lanchonetes.createCardapio")}
+                  </Button>
+                </Paper>
+              ) : (
+                cardapioForms.map((form) => {
+                  const link = `${window.location.origin}/f/${form.publicId}`;
+                  return (
+                    <Paper
+                      key={form.id}
+                      style={{
+                        padding: 20,
+                        marginBottom: 12,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: 12,
+                      }}
+                    >
+                      <Box>
+                        <Typography variant="subtitle1" style={{ fontWeight: 600 }}>
+                          {form.name}
+                        </Typography>
+                        <Typography variant="caption" color="textSecondary">
+                          {link}
+                        </Typography>
+                      </Box>
+                      <Box display="flex" gap={1} flexWrap="wrap">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<LinkIcon />}
+                          onClick={() => handleCopyLink(link)}
+                        >
+                          Copiar link
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => history.push(`/forms/${form.id}`)}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="primary"
+                          onClick={() => handleTabChange(null, 4, form.id)}
+                        >
+                          Mesa
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="primary"
+                          onClick={() => handleTabChange(null, 5, form.id)}
+                        >
+                          Delivery
+                        </Button>
+                      </Box>
+                    </Paper>
+                  );
+                })
+              )}
+            </Box>
+          )}
+          {tabValue === 3 && (
+            <Mesas
+              cardapioSlugFromHub={
+                params.get("formId")
+                  ? (cardapioForms.find((f) => String(f.id) === params.get("formId"))?.publicId)
+                  : cardapioForms[0]?.publicId
+              }
+            />
+          )}
+          {tabValue === 4 && <Pedidos orderTypeFilter="mesa" />}
+          {tabValue === 5 && <Pedidos orderTypeFilter="delivery" />}
+          {tabValue === 6 && (
+            <Box>
+              <Typography variant="h6" gutterBottom>
+                Área do garçom
+              </Typography>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 24 }}>
+                Os garçons podem escanear o QR Code abaixo para abrir a tela simplificada de pedidos no celular.
+              </Typography>
+              <Paper style={{ padding: 24, maxWidth: 400 }}>
+                <Box display="flex" flexDirection="column" alignItems="center">
+                  <QRCode
+                    value={`${window.location.origin}/garcom`}
+                    size={220}
+                    level="M"
+                    includeMargin
+                  />
+                  <Typography variant="body2" color="textSecondary" style={{ marginTop: 16, textAlign: "center" }}>
+                    Escaneie para abrir a tela de pedidos
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, wordBreak: "break-all" }}>
+                    {window.location.origin}/garcom
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    style={{ marginTop: 16 }}
+                    onClick={() => history.push("/garcom")}
+                  >
+                    Abrir tela do garçom
+                  </Button>
+                </Box>
+              </Paper>
+              <Box mt={3}>
+                <Typography variant="subtitle2" gutterBottom>
+                  O que o garçom pode fazer:
+                </Typography>
+                <ul style={{ paddingLeft: 20, color: "var(--color-text-secondary, #666)" }}>
+                  <li>Selecionar a mesa</li>
+                  <li>Se a mesa estiver livre: criar ou escolher o cliente e ocupar a mesa</li>
+                  <li>Se a mesa estiver ocupada: adicionar itens direto à conta</li>
+                  <li>Montar o pedido e enviar para a cozinha</li>
+                </ul>
+              </Box>
+            </Box>
+          )}
+          {tabValue === 7 && (
+            <Box>
+              <Typography variant="h6" gutterBottom>
+                Área do entregador
+              </Typography>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 24 }}>
+                O entregador pode escanear o QR Code abaixo para abrir a tela de coleta no celular, escanear os QRs dos pedidos e iniciar/finalizar a rota.
+              </Typography>
+              <Paper style={{ padding: 24, maxWidth: 400 }}>
+                <Box display="flex" flexDirection="column" alignItems="center">
+                  <QRCode
+                    value={`${window.location.origin}/entregador`}
+                    size={220}
+                    level="M"
+                    includeMargin
+                  />
+                  <Typography variant="body2" color="textSecondary" style={{ marginTop: 16, textAlign: "center" }}>
+                    Escaneie para abrir a tela do entregador
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, wordBreak: "break-all" }}>
+                    {window.location.origin}/entregador
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    style={{ marginTop: 16 }}
+                    onClick={() => history.push("/entregador")}
+                  >
+                    Abrir tela do entregador
+                  </Button>
+                </Box>
+              </Paper>
+              <Box mt={3}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Fluxo do entregador:
+                </Typography>
+                <ul style={{ paddingLeft: 20, color: "var(--color-text-secondary, #666)" }}>
+                  <li>Escanear os QR Codes impressos nos pedidos delivery para adicionar à rota</li>
+                  <li>Clicar em &quot;Iniciar rota&quot; (atualiza status e notifica clientes)</li>
+                  <li>Após as entregas, clicar em &quot;Finalizar rota&quot; (marca como entregue e envia avaliação)</li>
+                </ul>
+              </Box>
+            </Box>
+          )}
+          {tabValue === 8 && (
+            <Box>
+              <Typography variant="h6" gutterBottom>
+                Área da cozinha
+              </Typography>
+              <Typography variant="body2" color="textSecondary" style={{ marginBottom: 24 }}>
+                A cozinha pode escanear o QR Code abaixo para abrir a tela de pedidos no celular ou tablet — pedidos de mesa e delivery em abas separadas.
+              </Typography>
+              <Paper style={{ padding: 24, maxWidth: 400 }}>
+                <Box display="flex" flexDirection="column" alignItems="center">
+                  <QRCode
+                    value={`${window.location.origin}/cozinha`}
+                    size={220}
+                    level="M"
+                    includeMargin
+                  />
+                  <Typography variant="body2" color="textSecondary" style={{ marginTop: 16, textAlign: "center" }}>
+                    Escaneie para abrir a tela da cozinha
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, wordBreak: "break-all" }}>
+                    {window.location.origin}/cozinha
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    style={{ marginTop: 16 }}
+                    onClick={() => history.push("/cozinha")}
+                  >
+                    Abrir tela da cozinha
+                  </Button>
+                </Box>
+              </Paper>
+              <Box mt={3}>
+                <Typography variant="subtitle2" gutterBottom>
+                  O que a cozinha pode fazer:
+                </Typography>
+                <ul style={{ paddingLeft: 20, color: "var(--color-text-secondary, #666)" }}>
+                  <li>Ver pedidos de mesa e pedidos delivery em abas separadas</li>
+                  <li>Confirmar, marcar em preparo e concluir pedidos</li>
+                  <li>Atualização em tempo real via conexão com o sistema</li>
+                </ul>
+              </Box>
+            </Box>
+          )}
+        </Box>
+      </Box>
+
+      <DespesasModal
+        open={despesasModalOpen}
+        onClose={() => setDespesasModalOpen(false)}
+        onSaved={() => {
+          const params = {};
+          if (filtroInicial) params.initialDate = filtroInicial;
+          if (filtroFinal) params.finalDate = filtroFinal;
+          if (!filtroInicial || !filtroFinal) {
+            const now = new Date();
+            const localEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+            const start = new Date(now);
+            start.setDate(start.getDate() - 29);
+            const localStart = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+            if (!filtroInicial) params.initialDate = localStart;
+            if (!filtroFinal) params.finalDate = localEnd;
+          }
+          api.get("/dashboard/lanchonetes-stats", { params }).then(({ data }) => setLanchonetesStats((prev) => ({ ...prev, ...data }))).catch(() => {});
+          api
+            .get("/despesas", { params: { proximas: 1, limit: 8 } })
+            .then(({ data }) => setProximasDespesas(apenasDespesasProximas(Array.isArray(data) ? data : [])))
+            .catch(() => {});
+        }}
+      />
+      <QuickScanModal open={quickScanOpen} onClose={() => setQuickScanOpen(false)} />
+      <RelatorioProdutosModal
+        open={relatorioProdutosOpen}
+        onClose={() => setRelatorioProdutosOpen(false)}
+      />
+    </MainContainer>
+  );
+};
+
+export default LanchonetesHub;

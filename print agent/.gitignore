@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.log
+.DS_Store
+config.json
+agent.db
+# Build PyInstaller
+dist/
+build/
+# PrintAgent.spec é versionado (usado por build.bat)
+*.spec
+!PrintAgent.spec
