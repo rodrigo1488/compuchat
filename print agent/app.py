@@ -384,6 +384,14 @@ def mesas_page():
     return render_template("mesas.html", active_nav="mesas", boot=boot)
 
 
+@app.route("/clientes")
+def clientes_page():
+    """Listagem do cadastro local. A mesa aberta usa o mesmo cadastro em /pos/conta."""
+    clientes = db.list_cliente_local(limit=5000)
+    boot = {"clientes": clientes, "limitado": len(clientes) >= 5000}
+    return render_template("clientes.html", active_nav="clientes", boot=boot)
+
+
 @app.route("/config", methods=["GET", "POST"])
 def config():
     """GET: exibe form. POST: salva configuração (ws_url + lista de impressoras)."""
@@ -1684,6 +1692,7 @@ if __name__ == "__main__":
         print("Print Agent - WebSocket")
         print("=" * 50)
         print("Interface: http://localhost:5000/")
+        print("Clientes:  http://localhost:5000/clientes")
         print("Produtos:  http://localhost:5000/products")
         print("Logs:      http://localhost:5000/logs")
         print("Status:    http://localhost:5000/status")

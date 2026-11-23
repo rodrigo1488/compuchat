@@ -118,6 +118,39 @@
     .desconto-row input { width: 7rem; }
     .status-line { min-height: 1.2rem; margin: 0.4rem 0 0; }
     .status-line.err { color: var(--danger); }
+    .cliente-box {
+        margin: 0.85rem 0 0.35rem;
+        padding: 0.75rem 0.85rem;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+    }
+    .cliente-box h3 {
+        margin: 0 0 0.35rem;
+        font-size: 0.95rem;
+    }
+    .cliente-box p { margin: 0.15rem 0; }
+    .cliente-dl {
+        display: grid;
+        grid-template-columns: 7.2rem 1fr;
+        gap: 0.2rem 0.6rem;
+        margin: 0.35rem 0 0;
+    }
+    .cliente-dl dt { color: var(--muted); font-size: 0.8rem; }
+    .cliente-dl dd { margin: 0; font-size: 0.92rem; }
+    a.btn-conversa {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.55rem 0.95rem;
+        border-radius: 10px;
+        background: #0e7490;
+        color: #fff;
+        font-weight: 700;
+        font-size: 0.92rem;
+        text-decoration: none;
+        white-space: nowrap;
+    }
+    a.btn-conversa:hover { background: #155e75; color: #fff; text-decoration: none; }
 </style>
 {% endblock %}
 {% block content %}
@@ -281,6 +314,65 @@
         if (box) box.innerHTML = htmlTotais(totaisConta(contaAtual));
     }
 
+    function formatPhone(value) {
+        const digits = String(value || "").replace(/\D/g, "");
+        const local = digits.length > 11 && digits.indexOf("55") === 0 ? digits.slice(2) : digits;
+        if (local.length === 11) return "(" + local.slice(0, 2) + ") " + local.slice(2, 7) + "-" + local.slice(7);
+        if (local.length === 10) return "(" + local.slice(0, 2) + ") " + local.slice(2, 6) + "-" + local.slice(6);
+        return String(value || "");
+    }
+
+    function formatCpf(value) {
+        const digits = String(value || "").replace(/\D/g, "");
+        if (digits.length !== 11) return String(value || "");
+        return digits.slice(0, 3) + "." + digits.slice(3, 6) + "." + digits.slice(6, 9) + "-" + digits.slice(9);
+    }
+
+    function linhaCliente(rotulo, valor) {
+        if (!valor) return "";
+        return "<dt>" + rotulo + "</dt><dd>" + escapeHtml(valor) + "</dd>";
+    }
+
+    function conversaHref(nome, tel) {
+        const digits = String(tel || "").replace(/\D/g, "");
+        if (!digits) return "";
+        const params = new URLSearchParams();
+        params.set("phone", digits);
+        if (nome) params.set("name", String(nome));
+        return "https://www.compuchat.cloud/tickets?" + params.toString();
+    }
+
+    function botaoConversa(nome, tel) {
+        const href = conversaHref(nome, tel);
+        if (!href) return "";
+        return "<a class='btn-conversa' href='" + escapeHtml(href) + "' target='_blank' rel='noopener'>Conversar</a>";
+    }
+
+    function htmlCliente(conta) {
+        const dados = conta.clienteDados || null;
+        const nomeConta = String(conta.cliente || "").trim();
+        const link = "<p style='margin-top:0.45rem'><a href='/clientes'>Ver listagem de clientes</a></p>";
+        if (conta.clienteAmbiguo) {
+            return "<div class='cliente-box'><h3>Cliente da mesa</h3><p>" + escapeHtml(nomeConta || "Sem nome") + "</p><p class='muted'>Há mais de um cadastro com esse nome. Abra a listagem para ver os dados.</p>" + link + "</div>";
+        }
+        if (!dados) {
+            const tel = conta.telefone ? "<p>Telefone " + escapeHtml(formatPhone(conta.telefone)) + "</p>" : "";
+            return "<div class='cliente-box'><h3>Cliente da mesa</h3><p>" + escapeHtml(nomeConta || "Sem cliente") + "</p>" + tel + "<p class='muted'>Sem cadastro local com esse nome ou telefone.</p>" + link + "</div>";
+        }
+        const endereco = [dados.logradouro, dados.numCasa].filter(Boolean).join(", ");
+        const outroNome = nomeConta && nomeConta.toLowerCase() !== String(dados.nome || "").toLowerCase()
+            ? linhaCliente("Na conta", nomeConta)
+            : "";
+        const campos = outroNome
+            + linhaCliente("Telefone", dados.tel ? formatPhone(dados.tel) : formatPhone(conta.telefone))
+            + linhaCliente("Endereço", endereco)
+            + linhaCliente("CPF", dados.cpf ? formatCpf(dados.cpf) : "")
+            + linhaCliente("Observação", dados.obs || "");
+        return "<div class='cliente-box'><h3>" + escapeHtml(dados.nome || nomeConta || "Cliente") + "</h3>"
+            + (campos ? "<dl class='cliente-dl'>" + campos + "</dl>" : "<p class='muted'>Cadastro sem telefone, endereço ou CPF.</p>")
+            + link + "</div>";
+    }
+
     function renderConta(conta) {
         contaAtual = conta;
         const salvo = descontos[conta.numeromesa] || { tipo: "percent", valor: 0 };
@@ -289,8 +381,12 @@
             const obs = item.observacao ? "<div class='muted'>" + escapeHtml(item.observacao) + "</div>" : "";
             return "<div class='item-line'><strong>" + formatQty(item.quantidade) + "</strong><div>" + escapeHtml(item.nomeproduto || "Item") + obs + "</div><span>" + money(item.valortotal) + "</span></div>";
         }).join("");
+        const dadosConversa = conta.clienteDados || {};
+        const nomeConversa = dadosConversa.nome || conta.cliente || "";
+        const telConversa = dadosConversa.tel || conta.telefone || "";
         contaEl.innerHTML =
-            "<div class='mesas-top'><div><h2 style='margin:0'>Mesa " + conta.numeromesa + "</h2><p class='muted' style='margin:0.2rem 0 0'>" + escapeHtml(conta.cliente || "Sem cliente") + "</p></div><button type='button' id='print' class='btn'>Imprimir conferência</button></div>" +
+            "<div class='mesas-top'><div><h2 style='margin:0'>Mesa " + conta.numeromesa + "</h2><p class='muted' style='margin:0.2rem 0 0'>" + escapeHtml(conta.cliente || "Sem cliente") + "</p></div><div class='mesas-actions'>" + botaoConversa(nomeConversa, telConversa) + "<button type='button' id='print' class='btn'>Imprimir conferência</button></div></div>" +
+            htmlCliente(conta) +
             (linhas || "<p class='muted'>Conta sem itens.</p>") +
             "<div class='desconto-row'><label for='desconto-valor'>Desconto</label><input id='desconto-valor' type='number' min='0' step='0.01' value='" + salvo.valor + "'><select id='desconto-tipo'><option value='percent'" + (salvo.tipo === "percent" ? " selected" : "") + ">%</option><option value='valor'" + (salvo.tipo === "valor" ? " selected" : "") + ">R$</option></select></div>" +
             "<div class='totais' id='totais'></div>";

@@ -685,6 +685,40 @@ def pos_mesas():
     return jsonify({"mesas": _mesas_com_status_uniplus(_tipopedido_from_request())})
 
 
+def _contato_local_da_mesa(numeromesa: int) -> Dict[str, str]:
+    """Nome e telefone gravados na comanda do salão, quando existem."""
+    for mesa in db.list_floor_mesas():
+        slot = parse_numeromesa(mesa.get("number")) or parse_numeromesa(mesa.get("name"))
+        if slot == int(numeromesa):
+            return {
+                "nome": str(mesa.get("contactName") or "").strip(),
+                "tel": str(mesa.get("contactPhone") or "").strip(),
+            }
+    return {"nome": "", "tel": ""}
+
+
+def anexar_cliente_da_mesa(conta: Dict[str, Any], numeromesa: int) -> Dict[str, Any]:
+    """Junta o cadastro local de quem está na mesa à conta aberta."""
+    if not conta.get("open"):
+        return conta
+    try:
+        local = _contato_local_da_mesa(numeromesa)
+        nome = str(conta.get("cliente") or "").strip() or local["nome"]
+        if nome and not str(conta.get("cliente") or "").strip():
+            conta["cliente"] = nome
+        match = db.match_cliente_local(nome, local["tel"])
+        cliente = match.get("cliente")
+        conta["clienteDados"] = cliente
+        conta["clienteAmbiguo"] = bool(match.get("ambiguo"))
+        conta["telefone"] = str((cliente or {}).get("tel") or local["tel"] or "")
+    except Exception as exc:
+        print(f"[POS] cadastro do cliente da mesa {numeromesa} indisponível: {exc}")
+        conta["clienteDados"] = None
+        conta["clienteAmbiguo"] = False
+        conta["telefone"] = ""
+    return conta
+
+
 @pos_bp.route("/pos/conta", methods=["GET"])
 @_require_pos_token
 def pos_conta():
@@ -692,11 +726,10 @@ def pos_conta():
     if not numeromesa:
         return jsonify({"error": "numeromesa_required"}), 400
     try:
-        return jsonify(
-            get_open_mesa_conta(db, numeromesa, tipopedido=_tipopedido_from_request())
-        )
+        conta = get_open_mesa_conta(db, numeromesa, tipopedido=_tipopedido_from_request())
     except Exception as exc:
         return jsonify({"error": str(exc), "open": False, "itens": []}), 502
+    return jsonify(anexar_cliente_da_mesa(conta, numeromesa))
 
 
 @pos_bp.route("/pos/conta/conferencia", methods=["POST"])

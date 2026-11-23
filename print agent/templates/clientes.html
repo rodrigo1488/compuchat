@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Clientes — Print Agent{% endblock %}
+{% block extra_css %}
+<style>
+    .shell { width: 90%; max-width: 90%; }
+    .clientes-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-end;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+    .clientes-top h2 { margin: 0 0 0.2rem; }
+    .busca { min-width: 16rem; flex: 1; max-width: 28rem; }
+    .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(16rem, 0.8fr);
+        gap: 1rem;
+        align-items: start;
+    }
+    @media (max-width: 860px) {
+        .layout { grid-template-columns: 1fr; }
+    }
+    table.clientes {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+    table.clientes th, table.clientes td {
+        text-align: left;
+        padding: 0.55rem 0.45rem;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+    }
+    table.clientes th {
+        color: var(--muted);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+    table.clientes tr { cursor: pointer; }
+    table.clientes tr:hover { background: #f4faf9; }
+    table.clientes tr.active { background: var(--accent-soft); }
+    .cliente-detalhe {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 0.9rem;
+        background: #f8fbfb;
+        min-height: 220px;
+    }
+    .cliente-detalhe h3 { margin: 0 0 0.6rem; }
+    .cliente-dl {
+        display: grid;
+        grid-template-columns: 7.2rem 1fr;
+        gap: 0.35rem 0.6rem;
+        margin: 0;
+    }
+    .cliente-dl dt { color: var(--muted); font-size: 0.8rem; }
+    .cliente-dl dd { margin: 0; }
+    a.btn-conversa {
+        display: inline-flex;
+        align-items: center;
+        margin-top: 0.75rem;
+        padding: 0.45rem 0.75rem;
+        border-radius: 8px;
+        background: #0e7490;
+        color: #fff;
+        font-size: 0.82rem;
+        font-weight: 700;
+        text-decoration: none;
+        white-space: nowrap;
+    }
+    a.btn-conversa:hover { background: #155e75; color: #fff; text-decoration: none; }
+    td a.btn-conversa { margin-top: 0; padding: 0.28rem 0.55rem; font-size: 0.75rem; }
+    .muted { color: var(--muted); font-size: 0.84rem; }
+    .vazio { padding: 0.8rem 0; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="clientes-top">
+    <div>
+        <h2>Clientes</h2>
+        <p class="hint" id="contagem" style="margin: 0;">Cadastro local usado na ocupação da mesa.</p>
+    </div>
+    <div class="busca">
+        <label for="busca">Buscar</label>
+        <input id="busca" type="text" placeholder="Nome, telefone, CPF ou endereço" autocomplete="off">
+    </div>
+</div>
+<p id="aviso" class="hint" hidden>A lista mostra os 5000 cadastros mais recentes.</p>
+<div class="layout">
+    <div>
+        <table class="clientes">
+            <thead>
+                <tr>
+                    <th>Nome</th>
+                    <th>Telefone</th>
+                    <th>Endereço</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="lista"></tbody>
+        </table>
+        <p id="vazio" class="muted vazio" hidden>Nenhum cliente encontrado.</p>
+        <div class="pager" id="cliente-pager" hidden>
+            <button type="button" class="btn-ghost" data-pager-prev>Anterior</button>
+            <span class="pager-label" data-pager-label></span>
+            <button type="button" class="btn-ghost" data-pager-next>Próxima</button>
+        </div>
+    </div>
+    <div class="cliente-detalhe" id="detalhe">
+        <p class="muted">Escolha um cliente para ver telefone, endereço, CPF e observação.</p>
+    </div>
+</div>
+<script id="clientes-boot" type="application/json">{{ boot|tojson }}</script>
+{% endblock %}
+{% block extra_js %}
+<script>
+(function () {
+    const boot = JSON.parse(document.getElementById("clientes-boot").textContent);
+    const clientes = boot.clientes || [];
+    const listaEl = document.getElementById("lista");
+    const detalheEl = document.getElementById("detalhe");
+    const vazioEl = document.getElementById("vazio");
+    const contagemEl = document.getElementById("contagem");
+    const avisoEl = document.getElementById("aviso");
+    let selecionado = null;
+    let visiveis = clientes.slice();
+    let pager = null;
+
+    if (boot.limitado) avisoEl.hidden = false;
+
+    function fold(value) {
+        return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    }
+
+    function digits(value) {
+        return String(value || "").replace(/\D/g, "");
+    }
+
+    function formatPhone(value) {
+        const raw = digits(value);
+        const local = raw.length > 11 && raw.indexOf("55") === 0 ? raw.slice(2) : raw;
+        if (local.length === 11) return "(" + local.slice(0, 2) + ") " + local.slice(2, 7) + "-" + local.slice(7);
+        if (local.length === 10) return "(" + local.slice(0, 2) + ") " + local.slice(2, 6) + "-" + local.slice(6);
+        return String(value || "");
+    }
+
+    function formatCpf(value) {
+        const raw = digits(value);
+        if (raw.length !== 11) return String(value || "");
+        return raw.slice(0, 3) + "." + raw.slice(3, 6) + "." + raw.slice(6, 9) + "-" + raw.slice(9);
+    }
+
+    function endereco(cliente) {
+        return [cliente.logradouro, cliente.numCasa].filter(Boolean).join(", ");
+    }
+
+    function conversaHref(nome, tel) {
+        const numero = digits(tel);
+        if (!numero) return "";
+        const params = new URLSearchParams();
+        params.set("phone", numero);
+        if (nome) params.set("name", String(nome));
+        return "https://www.compuchat.cloud/tickets?" + params.toString();
+    }
+
+    function escapeHtml(value) {
+        return String(value || "").replace(/[&<>"']/g, function (char) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char];
+        });
+    }
+
+    function combina(cliente, termo) {
+        if (!termo) return true;
+        const texto = fold([cliente.nome, cliente.tel, cliente.logradouro, cliente.numCasa, cliente.obs, cliente.cpf].join(" "));
+        if (texto.indexOf(fold(termo)) !== -1) return true;
+        const numero = digits(termo);
+        if (!numero) return false;
+        return digits(cliente.tel).indexOf(numero) !== -1 || digits(cliente.cpf).indexOf(numero) !== -1;
+    }
+
+    function renderDetalhe(cliente) {
+        if (!cliente) {
+            detalheEl.innerHTML = "<p class='muted'>Escolha um cliente para ver telefone, endereço, CPF e observação.</p>";
+            return;
+        }
+        function linha(rotulo, valor) {
+            return "<dt>" + rotulo + "</dt><dd>" + escapeHtml(valor || "—") + "</dd>";
+        }
+        detalheEl.innerHTML =
+            "<h3>" + escapeHtml(cliente.nome || "Cliente") + "</h3>" +
+            "<dl class='cliente-dl'>" +
+            linha("Telefone", cliente.tel ? formatPhone(cliente.tel) : "") +
+            linha("Endereço", endereco(cliente)) +
+            linha("CPF", cliente.cpf ? formatCpf(cliente.cpf) : "") +
+            linha("Observação", cliente.obs) +
+            "</dl>" +
+            (conversaHref(cliente.nome, cliente.tel)
+                ? "<a class='btn-conversa' href='" + escapeHtml(conversaHref(cliente.nome, cliente.tel)) + "' target='_blank' rel='noopener'>Conversar no Compuchat</a>"
+                : "<p class='muted' style='margin-top:0.7rem'>Sem telefone para abrir a conversa.</p>");
+    }
+
+    function renderLista() {
+        listaEl.innerHTML = "";
+        visiveis.forEach(function (cliente) {
+            const tr = document.createElement("tr");
+            tr.className = "cliente-row" + (selecionado === cliente.id ? " active" : "");
+            const href = conversaHref(cliente.nome, cliente.tel);
+            const acao = href
+                ? "<a class='btn-conversa' href='" + escapeHtml(href) + "' target='_blank' rel='noopener'>Conversar</a>"
+                : "<span class='muted'>—</span>";
+            tr.innerHTML =
+                "<td>" + escapeHtml(cliente.nome || "—") + "</td>" +
+                "<td>" + escapeHtml(cliente.tel ? formatPhone(cliente.tel) : "—") + "</td>" +
+                "<td>" + escapeHtml(endereco(cliente) || "—") + "</td>" +
+                "<td>" + acao + "</td>";
+            const conversa = tr.querySelector("a.btn-conversa");
+            if (conversa) {
+                conversa.addEventListener("click", function (event) { event.stopPropagation(); });
+            }
+            tr.addEventListener("click", function () {
+                selecionado = cliente.id;
+                renderLista();
+                renderDetalhe(cliente);
+                if (pager) pager.refresh();
+            });
+            listaEl.appendChild(tr);
+        });
+        vazioEl.hidden = visiveis.length > 0;
+        contagemEl.textContent = visiveis.length + " cliente(s)" + (visiveis.length === clientes.length ? "" : " de " + clientes.length);
+        if (pager) pager.refresh();
+    }
+
+    document.getElementById("busca").addEventListener("input", function (event) {
+        const termo = event.target.value.trim();
+        visiveis = clientes.filter(function (cliente) { return combina(cliente, termo); });
+        if (selecionado !== null && !visiveis.some(function (cliente) { return cliente.id === selecionado; })) {
+            selecionado = null;
+            renderDetalhe(null);
+        }
+        renderLista();
+    });
+
+    renderLista();
+    pager = window.setupListPager(".cliente-row", "#cliente-pager", 20);
+    if (pager) pager.refresh();
+})();
+</script>
+{% endblock %}

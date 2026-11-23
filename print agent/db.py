@@ -1482,6 +1482,63 @@ def replace_cliente_local_from_cloud(clientes: List[Dict[str, Any]]) -> List[Dic
     return out
 
 
+def _digitos(raw: Any) -> str:
+    return "".join(ch for ch in str(raw or "") if ch.isdigit())
+
+
+def _telefones_iguais(a: Any, b: Any) -> bool:
+    """Mesmo número, com ou sem o 55 na frente."""
+    left = _digitos(a)
+    right = _digitos(b)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if left.startswith("55") and left[2:] == right:
+        return True
+    return right.startswith("55") and right[2:] == left
+
+
+def escolher_cliente_local(
+    clientes: List[Dict[str, Any]],
+    nome: str = "",
+    tel: str = "",
+) -> Dict[str, Any]:
+    """Escolhe o cadastro de quem ocupa a mesa.
+
+    Telefone igual ganha, mesmo que o nome da conta seja mais curto.
+    Sem telefone, só um nome exatamente igual (sem acento) entra.
+    Vários nomes iguais não escolhem um cadastro.
+    A lista já vem da mais recente para a mais antiga.
+    """
+    por_telefone = [
+        cliente
+        for cliente in clientes or []
+        if _telefones_iguais(cliente.get("tel"), tel)
+    ]
+    if por_telefone:
+        return {"cliente": por_telefone[0], "ambiguo": False}
+
+    folded = _fold(nome)
+    if not folded:
+        return {"cliente": None, "ambiguo": False}
+    por_nome = [
+        cliente
+        for cliente in clientes or []
+        if _fold(cliente.get("nome")) == folded
+    ]
+    if len(por_nome) == 1:
+        return {"cliente": por_nome[0], "ambiguo": False}
+    if len(por_nome) > 1:
+        return {"cliente": None, "ambiguo": True}
+    return {"cliente": None, "ambiguo": False}
+
+
+def match_cliente_local(nome: str = "", tel: str = "") -> Dict[str, Any]:
+    """Cadastro local do ocupante, ou nenhum quando o nome se repete."""
+    return escolher_cliente_local(list_cliente_local(limit=10000), nome, tel)
+
+
 def search_cliente_local(q: str, limit: int = 30) -> List[Dict[str, Any]]:
     """Busca parcial por nome, telefone, CPF ou logradouro."""
     term = str(q or "").strip()

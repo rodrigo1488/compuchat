@@ -247,7 +247,13 @@ const useAuth = () => {
         }
         const route = typeof data.user?.defaultRoute === "string" ? data.user.defaultRoute.trim() : "";
         const allowedRoutes = ["dashboard", "tickets", "cozinha", "entregador", "garcom", "pedidos", "mesas", "forms", "lanchonetes", "pdv"];
-        const path = route && allowedRoutes.includes(route) ? `/${route}` : "/tickets";
+        const from = history.location?.state?.from;
+        const returnTo = from && typeof from.pathname === "string"
+          && (from.pathname === "/tickets" || from.pathname.startsWith("/tickets/"))
+          && (typeof from.search !== "string" || from.search === "" || from.search.startsWith("?"))
+          ? `${from.pathname}${from.search || ""}`
+          : "";
+        const path = returnTo || (route && allowedRoutes.includes(route) ? `/${route}` : "/tickets");
         history.push(path);
       } else {
         // Assinatura vencida - redirecionar para página de vencimento
