@@ -13,7 +13,12 @@ import {
   ForeignKey,
   HasMany,
   DataType,
-  Default
+  Default,
+  AfterBulkDestroy,
+  AfterBulkUpdate,
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate
 } from "sequelize-typescript";
 import User from "./User";
 import UserQueue from "./UserQueue";
@@ -24,6 +29,10 @@ import WhatsappQueue from "./WhatsappQueue";
 import QueueOption from "./QueueOption";
 import Prompt from "./Prompt";
 import QueueIntegrations from "./QueueIntegrations";
+import {
+  invalidateQueuesBulk,
+  invalidateQueuesInstance
+} from "../helpers/companyCacheHooks";
 
 @Table
 class Queue extends Model<Queue> {
@@ -96,6 +105,19 @@ class Queue extends Model<Queue> {
 
   @BelongsTo(() => Prompt)
   prompt: Prompt;
+
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static invalidateQueues(instance: Queue): void {
+    invalidateQueuesInstance(instance);
+  }
+
+  @AfterBulkUpdate
+  @AfterBulkDestroy
+  static invalidateQueuesBulk(options: { where?: { companyId?: unknown } }): void {
+    invalidateQueuesBulk(options);
+  }
 }
 
 export default Queue;

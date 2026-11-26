@@ -10,10 +10,19 @@ import {
   ForeignKey,
   BelongsTo,
   HasMany,
+  AfterBulkDestroy,
+  AfterBulkUpdate,
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate,
 } from "sequelize-typescript";
 import Company from "./Company";
 import AddOnSubgroup from "./AddOnSubgroup";
 import AddOnItem from "./AddOnItem";
+import {
+  invalidateCatalogBulk,
+  invalidateCatalogInstance
+} from "../helpers/companyCacheHooks";
 
 @Table
 class AddOnGroup extends Model<AddOnGroup> {
@@ -53,6 +62,19 @@ class AddOnGroup extends Model<AddOnGroup> {
 
   @UpdatedAt
   updatedAt: Date;
+
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static invalidateCatalog(instance: AddOnGroup): void {
+    invalidateCatalogInstance(instance);
+  }
+
+  @AfterBulkUpdate
+  @AfterBulkDestroy
+  static invalidateCatalogBulk(options: { where?: { companyId?: unknown } }): void {
+    invalidateCatalogBulk(options);
+  }
 }
 
 export default AddOnGroup;

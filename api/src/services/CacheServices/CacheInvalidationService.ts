@@ -57,13 +57,43 @@ export const onCompanyChanged = async (companyId: number): Promise<void> => {
   await invalidate(companyId, ["company", "dashboard"]);
 };
 
+const pendingTimers = new Map<string, NodeJS.Timeout>();
+
+const schedule = (
+  companyId: number,
+  namespaces: CacheNamespace[],
+  delayMs = 80
+): void => {
+  const key = `${companyId}:${namespaces.join(",")}`;
+  const existing = pendingTimers.get(key);
+  if (existing) clearTimeout(existing);
+  pendingTimers.set(
+    key,
+    setTimeout(() => {
+      pendingTimers.delete(key);
+      void invalidate(companyId, namespaces);
+    }, delayMs)
+  );
+};
+
+/** Cardápio, mesas, adicionais e formulários. Várias gravações seguidas viram uma invalidação. */
+export const onCatalogChanged = (companyId: number): void => {
+  schedule(companyId, ["catalog"]);
+};
+
+export const onQueuesChanged = (companyId: number): void => {
+  schedule(companyId, ["queues"]);
+};
+
 const CacheInvalidationService = {
   onTicketChanged,
   onContactChanged,
   onSettingChanged,
   onModuleChanged,
   onUserChanged,
-  onCompanyChanged
+  onCompanyChanged,
+  onCatalogChanged,
+  onQueuesChanged
 };
 
 export default CacheInvalidationService;

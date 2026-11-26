@@ -10,11 +10,20 @@ import {
   Default,
   ForeignKey,
   BelongsTo,
+  AfterBulkDestroy,
+  AfterBulkUpdate,
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate,
 } from "sequelize-typescript";
 import Company from "./Company";
 import Contact from "./Contact";
 import Ticket from "./Ticket";
 import Form from "./Form";
+import {
+  invalidateCatalogBulk,
+  invalidateCatalogInstance
+} from "../helpers/companyCacheHooks";
 
 @Table
 class Mesa extends Model<Mesa> {
@@ -85,6 +94,19 @@ class Mesa extends Model<Mesa> {
 
   @UpdatedAt
   updatedAt: Date;
+
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static invalidateCatalog(instance: Mesa): void {
+    invalidateCatalogInstance(instance);
+  }
+
+  @AfterBulkUpdate
+  @AfterBulkDestroy
+  static invalidateCatalogBulk(options: { where?: { companyId?: unknown } }): void {
+    invalidateCatalogBulk(options);
+  }
 }
 
 export default Mesa;

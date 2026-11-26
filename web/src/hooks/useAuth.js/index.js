@@ -5,7 +5,7 @@ import { has, isArray } from "lodash";
 import { toast } from "react-toastify";
 
 import { i18n } from "../../translate/i18n";
-import api from "../../services/api";
+import api, { setOnAuthLost } from "../../services/api";
 import toastError from "../../errors/toastError";
 import { saveRememberedCredential } from "../../helpers/loginRememberedCredentials";
 import { SocketContext } from "../../context/Socket/SocketContext";
@@ -31,95 +31,14 @@ const useAuth = () => {
   const [companyLanguage, setCompanyLanguage] = useState("pt");
   const [messageTranslationEnabled, setMessageTranslationEnabled] = useState(false);
 
-  api.interceptors.request.use(
-    (config) => {
-      const token = localStorage.getItem("token");
-      if (token) {
-        config.headers["Authorization"] = `Bearer ${JSON.parse(token)}`;
-        setIsAuth(true);
-      }
-      return config;
-    },
-    (error) => {
-      Promise.reject(error);
-    }
-  );
-
-  let isRefreshing = false;
-  let failedRequestsQueue = [];
-
-  api.interceptors.response.use(
-    (response) => {
-      return response;
-    },
-    async (error) => {
-      const originalRequest = error.config;
-
-      if (error?.response?.status === 403 && !originalRequest._retry) {
-        if (isRefreshing) {
-          return new Promise((resolve, reject) => {
-            failedRequestsQueue.push({ resolve, reject });
-          })
-            .then((token) => {
-              originalRequest.headers.Authorization = `Bearer ${token}`;
-              return api(originalRequest);
-            })
-            .catch((err) => {
-              return Promise.reject(err);
-            });
-        }
-
-        originalRequest._retry = true;
-        isRefreshing = true;
-
-        try {
-          const { data } = await api.post("/auth/refresh_token");
-
-          if (data) {
-            localStorage.setItem("token", JSON.stringify(data.token));
-            api.defaults.headers.Authorization = `Bearer ${data.token}`;
-
-            failedRequestsQueue.forEach((request) => {
-              request.resolve(data.token);
-            });
-            failedRequestsQueue = [];
-          }
-
-          return api(originalRequest);
-        } catch (refreshError) {
-          failedRequestsQueue.forEach((request) => {
-            request.reject(refreshError);
-          });
-          failedRequestsQueue = [];
-
-          localStorage.removeItem("token");
-          localStorage.removeItem("companyId");
-          localStorage.removeItem("ai_chat_messages");
-          api.defaults.headers.Authorization = undefined;
-          setIsAuth(false);
-
-          return Promise.reject(refreshError);
-        } finally {
-          isRefreshing = false;
-        }
-      }
-
-      if (
-        error?.response?.status === 401 ||
-        (error?.response?.status === 403 && originalRequest._retry)
-      ) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("companyId");
-        localStorage.removeItem("ai_chat_messages");
-        api.defaults.headers.Authorization = undefined;
-        setIsAuth(false);
-      }
-
-      return Promise.reject(error);
-    }
-  );
-
   const socketManager = useContext(SocketContext);
+
+  useEffect(() => {
+    setOnAuthLost(() => {
+      setIsAuth(false);
+      setUser({});
+    });
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -140,13 +59,16 @@ const useAuth = () => {
           if (data.user?.company?.language) {
             setCompanyLanguage(data.user.company.language);
           }
-          const translationConfig = await loadTranslationConfig(
-            data.user?.company?.language || "pt"
+          setLoading(false);
+          void loadTranslationConfig(data.user?.company?.language || "pt").then(
+            (translationConfig) => {
+              if (!data.user?.company?.language) {
+                setCompanyLanguage(translationConfig.language);
+              }
+              setMessageTranslationEnabled(translationConfig.enabled);
+            }
           );
-          if (!data.user?.company?.language) {
-            setCompanyLanguage(translationConfig.language);
-          }
-          setMessageTranslationEnabled(translationConfig.enabled);
+          return;
         } catch (err) {
           toastError(err);
         }
@@ -220,13 +142,14 @@ const useAuth = () => {
       if (data.user?.company?.language) {
         setCompanyLanguage(data.user.company.language);
       }
-      const translationConfig = await loadTranslationConfig(
-        data.user?.company?.language || "pt"
+      void loadTranslationConfig(data.user?.company?.language || "pt").then(
+        (translationConfig) => {
+          if (!data.user?.company?.language) {
+            setCompanyLanguage(translationConfig.language);
+          }
+          setMessageTranslationEnabled(translationConfig.enabled);
+        }
       );
-      if (!data.user?.company?.language) {
-        setCompanyLanguage(translationConfig.language);
-      }
-      setMessageTranslationEnabled(translationConfig.enabled);
       
       if (rememberMe && loginPayload.email && loginPayload.password != null) {
         try {

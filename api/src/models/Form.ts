@@ -11,11 +11,20 @@ import {
   ForeignKey,
   BelongsTo,
   HasMany,
+  AfterBulkDestroy,
+  AfterBulkUpdate,
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate,
 } from "sequelize-typescript";
 import Company from "./Company";
 import User from "./User";
 import FormField from "./FormField";
 import FormResponse from "./FormResponse";
+import {
+  invalidateCatalogBulk,
+  invalidateCatalogInstance
+} from "../helpers/companyCacheHooks";
 
 @Table
 class Form extends Model<Form> {
@@ -126,6 +135,19 @@ class Form extends Model<Form> {
 
   @UpdatedAt
   updatedAt: Date;
+
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static invalidateCatalog(instance: Form): void {
+    invalidateCatalogInstance(instance);
+  }
+
+  @AfterBulkUpdate
+  @AfterBulkDestroy
+  static invalidateCatalogBulk(options: { where?: { companyId?: unknown } }): void {
+    invalidateCatalogBulk(options);
+  }
 }
 
 export default Form;

@@ -9,9 +9,18 @@ import {
   AutoIncrement,
   ForeignKey,
   BelongsTo,
+  AfterBulkDestroy,
+  AfterBulkUpdate,
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate,
 } from "sequelize-typescript";
 import Company from "./Company";
 import AddOnGroup from "./AddOnGroup";
+import {
+  invalidateCatalogBulk,
+  invalidateCatalogInstance
+} from "../helpers/companyCacheHooks";
 
 @Table({
   indexes: [
@@ -49,6 +58,19 @@ class GrupoAddOn extends Model<GrupoAddOn> {
 
   @UpdatedAt
   updatedAt: Date;
+
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static invalidateCatalog(instance: GrupoAddOn): void {
+    invalidateCatalogInstance(instance);
+  }
+
+  @AfterBulkUpdate
+  @AfterBulkDestroy
+  static invalidateCatalogBulk(options: { where?: { companyId?: unknown } }): void {
+    invalidateCatalogBulk(options);
+  }
 }
 
 export default GrupoAddOn;

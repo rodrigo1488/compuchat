@@ -1,7 +1,7 @@
 import * as Yup from "yup";
 import { Request, Response } from "express";
 import { getIO } from "../libs/socket";
-import { Op } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
 
 import Form from "../models/Form";
 import FormField from "../models/FormField";
@@ -47,12 +47,8 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
         separate: true,
         order: [["order", "ASC"]],
       },
-      {
-        association: "responses",
-        attributes: ["id"],
-        required: false,
-      },
     ],
+    distinct: true,
     limit,
     offset,
     order: [["createdAt", "DESC"]],
@@ -64,15 +60,33 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
     ? formsRaw.filter((f) => (f.settings as any)?.formType === "agendamento")
     : formsRaw;
 
+  const formIds = forms.map((form) => form.id);
+  const tableRef = FormResponse.getTableName();
+  const responseTable = typeof tableRef === "string" ? tableRef : tableRef.tableName;
+  const responseCountRows = formIds.length
+    ? await FormResponse.sequelize.query(
+        `SELECT "formId", COUNT(*) AS "responseCount" FROM "${responseTable}" WHERE "formId" IN (:formIds) GROUP BY "formId"`,
+        {
+          replacements: { formIds },
+          type: QueryTypes.SELECT
+        }
+      )
+    : [];
+  const responseCountByForm = new Map(
+    (responseCountRows as Array<{ formId: number; responseCount: string | number }>).map(
+      (row) => [Number(row.formId), Number(row.responseCount) || 0]
+    )
+  );
+
   const formsWithStats = forms.map((form) => {
     const formData: any = form.toJSON();
-    // Sort fields by order manually if needed
     if (formData.fields) {
       formData.fields.sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
     }
+    delete formData.responses;
     return {
       ...formData,
-      responseCount: formData.responses?.length || 0,
+      responseCount: responseCountByForm.get(form.id) || 0,
     };
   });
 

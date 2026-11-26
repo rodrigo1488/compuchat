@@ -1,45 +1,39 @@
-import { useState, useEffect } from "react";
+import { useQuery } from "react-query";
+import { useDebounce } from "use-debounce";
 import toastError from "../../errors/toastError";
-
 import api from "../../services/api";
 
+const EMPTY_CONTACTS = [];
+
 const useContacts = ({ searchParam, pageNumber, date, dateStart, dateEnd }) => {
-    const [loading, setLoading] = useState(true);
-    const [hasMore, setHasMore] = useState(false);
-    const [contacts, setContacts] = useState([]);
-    const [count, setCount] = useState(0);
+  const [debouncedSearch] = useDebounce(searchParam, searchParam ? 400 : 0);
+  const params = {
+    searchParam: debouncedSearch,
+    pageNumber,
+    date,
+    dateStart,
+    dateEnd,
+  };
 
-    useEffect(() => {
-        setLoading(true);
-        const delayDebounceFn = setTimeout(() => {
-            const fetchContacts = async () => {
-                try {
-                    const { data } = await api.get("/contacts", {
-                        params: {
-                            searchParam,
-                            pageNumber,
-                            date,
-                            dateStart,
-                            dateEnd,
-                        },
-                    });
-                    setContacts(data.contacts);
+  const { data, isLoading, isFetching } = useQuery(
+    ["contacts", params],
+    async () => {
+      const { data: payload } = await api.get("/contacts", { params });
+      return payload;
+    },
+    {
+      staleTime: 30 * 1000,
+      keepPreviousData: true,
+      onError: (err) => toastError(err),
+    }
+  );
 
-                    setHasMore(data.hasMore);
-                    setCount(data.count);
-                    setLoading(false);
-                } catch (err) {
-                    setLoading(false);
-                    toastError(err);
-                }
-            };
-
-            fetchContacts();
-        }, 500);
-        return () => clearTimeout(delayDebounceFn);
-    }, [searchParam, pageNumber, date, dateStart, dateEnd]);
-
-    return { contacts, loading, hasMore, count };
+  return {
+    contacts: data?.contacts || EMPTY_CONTACTS,
+    hasMore: Boolean(data?.hasMore),
+    count: data?.count || 0,
+    loading: isLoading || (isFetching && !data),
+  };
 };
 
 export default useContacts;

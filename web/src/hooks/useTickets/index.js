@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useQuery } from "react-query";
 import toastError from "../../errors/toastError";
-
 import api from "../../services/api";
+
+const EMPTY_TICKETS = [];
 
 const useTickets = ({
   searchParam,
@@ -15,56 +16,37 @@ const useTickets = ({
   queueIds,
   withUnreadMessages,
 }) => {
-  const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(false);
-  const [tickets, setTickets] = useState([]);
-
-  useEffect(() => {
-    setLoading(true);
-    // Debounce apenas para busca, não para carregamento inicial
-    const debounceDelay = searchParam ? 250 : 0;
-    const delayDebounceFn = setTimeout(() => {
-      const fetchTickets = async () => {
-        try {
-          const { data } = await api.get("/tickets", {
-            params: {
-              searchParam,
-              pageNumber,
-              tags,
-              users,
-              status,
-              date,
-              updatedAt,
-              showAll,
-              queueIds,
-              withUnreadMessages,
-            },
-          });
-          setTickets(data.tickets);
-          setHasMore(data.hasMore);
-          setLoading(false);
-        } catch (err) {
-          setLoading(false);
-          toastError(err);
-        }
-      };
-      fetchTickets();
-    }, debounceDelay);
-    return () => clearTimeout(delayDebounceFn);
-  }, [
+  const params = {
     searchParam,
+    pageNumber,
     tags,
     users,
-    pageNumber,
     status,
     date,
     updatedAt,
     showAll,
     queueIds,
     withUnreadMessages,
-  ]);
+  };
 
-  return { tickets, loading, hasMore };
+  const { data, isLoading, isFetching } = useQuery(
+    ["tickets", params],
+    async () => {
+      const { data: payload } = await api.get("/tickets", { params });
+      return payload;
+    },
+    {
+      staleTime: 15 * 1000,
+      onError: (err) => toastError(err),
+    }
+  );
+
+  return {
+    tickets: data?.tickets || EMPTY_TICKETS,
+    hasMore: Boolean(data?.hasMore),
+    count: data?.count,
+    loading: isLoading || (isFetching && !data),
+  };
 };
 
 export default useTickets;

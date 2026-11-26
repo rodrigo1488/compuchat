@@ -1,6 +1,7 @@
 import Product from "../../models/Product";
 import { Op } from "sequelize";
 import { productDetailInclude } from "./SyncProductComboItems";
+import { appCache, CACHE_TTL } from "../../libs/appCache";
 
 const productInclude = productDetailInclude;
 
@@ -20,6 +21,37 @@ interface Response {
 }
 
 const ListProductsService = async ({
+  companyId,
+  searchParam,
+  pageNumber = 1,
+  isMenuProduct,
+  grupo,
+}: Request): Promise<Response> => {
+  const cacheKey = appCache.buildKey("catalog", companyId, "products", {
+    searchParam: searchParam || "",
+    pageNumber,
+    isMenuProduct: isMenuProduct ?? null,
+    grupo: grupo || ""
+  });
+
+  const { value } = await appCache.getOrSet(
+    cacheKey,
+    CACHE_TTL.list,
+    () =>
+      listProductsFromDb({
+        companyId,
+        searchParam,
+        pageNumber,
+        isMenuProduct,
+        grupo
+      }),
+    "catalog"
+  );
+
+  return value;
+};
+
+const listProductsFromDb = async ({
   companyId,
   searchParam,
   pageNumber = 1,
@@ -56,11 +88,19 @@ const ListProductsService = async ({
   });
 
   const groupsResult = await Product.findAll({
-    where: { companyId },
+    where: {
+      companyId,
+      grupo: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] }
+    },
     attributes: ["grupo"],
+    group: ["grupo"],
     raw: true,
   });
-  const groups = [...new Set((groupsResult.map((r) => r.grupo).filter((g) => g != null && g.trim() !== "")))].sort();
+  const groups = groupsResult
+    .map((row) => row.grupo)
+    .filter((g) => g != null && String(g).trim() !== "")
+    .map((g) => String(g).trim())
+    .sort();
 
   return {
     products,

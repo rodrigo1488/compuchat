@@ -1,5 +1,6 @@
 import Mesa from "../../models/Mesa";
 import { Op } from "sequelize";
+import { appCache, CACHE_TTL } from "../../libs/appCache";
 
 interface Request {
   companyId: number;
@@ -10,6 +11,30 @@ interface Request {
 }
 
 const ListMesasService = async ({
+  companyId,
+  status,
+  type,
+  formId,
+  section,
+}: Request): Promise<Mesa[]> => {
+  const cacheKey = appCache.buildKey("catalog", companyId, "mesas", {
+    status: status || "",
+    type: type || "",
+    formId: formId || null,
+    section: section || ""
+  });
+
+  const { value } = await appCache.getOrSet(
+    cacheKey,
+    CACHE_TTL.live,
+    () => listMesasFromDb({ companyId, status, type, formId, section }),
+    "catalog"
+  );
+
+  return value as Mesa[];
+};
+
+const listMesasFromDb = async ({
   companyId,
   status,
   type,

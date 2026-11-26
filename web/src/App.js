@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 
 import "react-toastify/dist/ReactToastify.css";
-import { QueryClient, QueryClientProvider } from "react-query";
+import { QueryClientProvider } from "react-query";
+import { queryClient } from "./services/queryClient";
 
 import { enUS, ptBR, esES } from "@material-ui/core/locale";
 import { useMediaQuery } from "@material-ui/core";
@@ -9,8 +10,6 @@ import ColorModeContext from "./layout/themeContext";
 import { SocketContext, SocketManager } from "./context/Socket/SocketContext";
 
 import Routes from "./routes";
-
-const queryClient = new QueryClient();
 
 const App = () => {
   const [locale, setLocale] = useState(ptBR);

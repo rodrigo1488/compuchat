@@ -20,6 +20,7 @@ import AddOnSubgroup from "../models/AddOnSubgroup";
 import AddOnItem from "../models/AddOnItem";
 import AppError from "../errors/AppError";
 import { setPublicApiNoCacheHeaders } from "../helpers/setPublicApiNoCacheHeaders";
+import { appCache, CACHE_TTL } from "../libs/appCache";
 import { findPublicFormBySlug } from "../services/FormServices/FindPublicFormService";
 import { applyMenuCatalogIdWhere, filterProductsByMenuCatalog } from "../helpers/menuCatalogProducts";
 
@@ -303,8 +304,27 @@ export const getPublicMenuProducts = async (
     catalogSettings = fresh?.settings ?? catalogSettings;
   }
 
+  const cacheKey = appCache.buildKey(
+    "catalog",
+    form.companyId,
+    `public-menu:${form.id}`
+  );
+  const { value: menuPayload } = await appCache.getOrSet(
+    cacheKey,
+    CACHE_TTL.list,
+    () => buildPublicMenuPayload(form.companyId, catalogSettings),
+    "catalog"
+  );
+
+  return res.json(menuPayload);
+};
+
+const buildPublicMenuPayload = async (
+  companyId: number,
+  catalogSettings: unknown
+): Promise<{ products: any[]; count: number }> => {
   const productWhere: any = {
-    companyId: form.companyId,
+    companyId,
     isMenuProduct: true,
   };
   applyMenuCatalogIdWhere(productWhere, catalogSettings);
@@ -369,7 +389,7 @@ export const getPublicMenuProducts = async (
 
   // Mapeamento grupo -> addOnGroupId (atribuição por categoria)
   const grupoAssignments = await GrupoAddOn.findAll({
-    where: { companyId: form.companyId },
+    where: { companyId },
     attributes: ["grupo", "addOnGroupId"],
   });
   const grupoToAddOnId = new Map(grupoAssignments.map((a) => [a.grupo, a.addOnGroupId]));
@@ -383,7 +403,7 @@ export const getPublicMenuProducts = async (
   const addOnGroupsRaw = addOnGroupIds.size === 0
     ? []
     : await AddOnGroup.findAll({
-    where: { id: Array.from(addOnGroupIds), companyId: form.companyId },
+    where: { id: Array.from(addOnGroupIds), companyId },
     include: [
       { model: AddOnSubgroup, as: "subgroups", include: [{ model: AddOnItem, as: "items" }] },
       { model: AddOnItem, as: "items" },
@@ -435,10 +455,10 @@ export const getPublicMenuProducts = async (
     return po;
   });
 
-  return res.json({
+  return {
     products: productsWithAddOn,
     count: productsWithAddOn.length,
-  });
+  };
 };
 
 export const uploadImage = async (req: Request, res: Response): Promise<Response> => {

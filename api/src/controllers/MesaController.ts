@@ -54,10 +54,13 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
   });
 
   const base = getFrontendBaseUrl();
-  const list = mesas.map((m) => ({
-    ...m.get({ plain: true }),
-    linkUrl: `${base}/mesa/${m.id}?t=${signMesaLinkOnly(companyId, m.id)}`,
-  }));
+  const list = mesas.map((m) => {
+    const plain = typeof (m as Mesa).get === "function" ? (m as Mesa).get({ plain: true }) : m;
+    return {
+      ...plain,
+      linkUrl: `${base}/mesa/${plain.id}?t=${signMesaLinkOnly(companyId, plain.id)}`,
+    };
+  });
   return res.json(list);
 };
 

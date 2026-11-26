@@ -1,38 +1,28 @@
-import { useState, useEffect } from "react";
+import { useQuery } from "react-query";
 import toastError from "../../errors/toastError";
-
 import api from "../../services/api";
 
+const EMPTY_USERS = [];
+
 const useUsers = () => {
-    const [loading, setLoading] = useState(true);
-    const [hasMore, setHasMore] = useState(false);
-    const [users, setUsers] = useState([]);
-    const [count, setCount] = useState(0);
+  const { data, isLoading } = useQuery(
+    ["users"],
+    async () => {
+      const { data: payload } = await api.get("/users", { params: {} });
+      return payload;
+    },
+    {
+      staleTime: 60 * 1000,
+      onError: (err) => toastError(err),
+    }
+  );
 
-    useEffect(() => {
-        setLoading(true);
-        const delayDebounceFn = setTimeout(() => {
-            const fetchUsers = async () => {
-                try {
-                    const { data } = await api.get("/users", {
-                        params: {},
-                    });
-                    setUsers(data.users);
-                    setHasMore(data.hasMore);
-                    setCount(data.count);
-                    setLoading(false);
-                } catch (err) {
-                    setLoading(false);
-                    toastError(err);
-                }
-            };
-
-            fetchUsers();
-        }, 500);
-        return () => clearTimeout(delayDebounceFn);
-    }, []);
-
-    return { users, loading, hasMore, count };
+  return {
+    users: data?.users || EMPTY_USERS,
+    hasMore: Boolean(data?.hasMore),
+    count: data?.count || 0,
+    loading: isLoading,
+  };
 };
 
 export default useUsers;

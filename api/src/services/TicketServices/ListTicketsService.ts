@@ -377,20 +377,36 @@ const listTicketsFromDb = async ({
     companyId
   };
 
-  const { count, rows: tickets } = await Ticket.findAndCountAll({
+  const tickets = await Ticket.findAll({
     where: whereCondition,
     include: includeCondition,
-    distinct: true,
     limit,
     offset,
     order: [["updatedAt", "DESC"]],
     subQuery: false
   });
 
-  const hasMore = count > offset + tickets.length;
+  // Sem busca textual os joins são só para exibir a página. O COUNT com esses
+  // joins varre a tabela inteira e é o que deixa a lista de conversas lenta.
+  const count = await Ticket.count({
+    where: whereCondition,
+    include: searchParam ? includeCondition : undefined,
+    distinct: true,
+    col: "id"
+  });
+
+  const uniqueTickets: Ticket[] = [];
+  const seenTicketIds = new Set<number>();
+  for (const ticket of tickets) {
+    if (seenTicketIds.has(ticket.id)) continue;
+    seenTicketIds.add(ticket.id);
+    uniqueTickets.push(ticket);
+  }
+
+  const hasMore = count > offset + uniqueTickets.length;
 
   return {
-    tickets: tickets.map(t =>
+    tickets: uniqueTickets.map(t =>
       sanitizeTicketContactPic(t.toJSON() as Ticket)
     ),
     count,

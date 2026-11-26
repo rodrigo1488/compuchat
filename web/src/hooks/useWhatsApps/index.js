@@ -1,96 +1,73 @@
-import { useState, useEffect, useReducer, useContext } from "react";
+import { useEffect, useContext } from "react";
+import { useQuery } from "react-query";
 import toastError from "../../errors/toastError";
-
 import api from "../../services/api";
+import { queryClient } from "../../services/queryClient";
 import { SocketContext } from "../../context/Socket/SocketContext";
 
-const reducer = (state, action) => {
-  if (action.type === "LOAD_WHATSAPPS") {
-    const whatsApps = action.payload;
+const EMPTY_WHATSAPPS = [];
 
-    return [...whatsApps];
-  }
-
-  if (action.type === "UPDATE_WHATSAPPS") {
-    const whatsApp = action.payload;
-    const whatsAppIndex = state.findIndex((s) => s.id === whatsApp.id);
-
-    if (whatsAppIndex !== -1) {
-      state[whatsAppIndex] = whatsApp;
-      return [...state];
-    } else {
-      return [whatsApp, ...state];
-    }
-  }
-
-  if (action.type === "UPDATE_SESSION") {
-    const whatsApp = action.payload;
-    const whatsAppIndex = state.findIndex((s) => s.id === whatsApp.id);
-
-    if (whatsAppIndex !== -1) {
-      state[whatsAppIndex].status = whatsApp.status;
-      state[whatsAppIndex].updatedAt = whatsApp.updatedAt;
-      state[whatsAppIndex].qrcode = whatsApp.qrcode;
-      state[whatsAppIndex].retries = whatsApp.retries;
-      return [...state];
-    } else {
-      return [...state];
-    }
-  }
-
-  if (action.type === "DELETE_WHATSAPPS") {
-    const whatsAppId = action.payload;
-
-    const whatsAppIndex = state.findIndex((s) => s.id === whatsAppId);
-    if (whatsAppIndex !== -1) {
-      state.splice(whatsAppIndex, 1);
-    }
-    return [...state];
-  }
-
-  if (action.type === "RESET") {
-    return [];
-  }
-};
+const whatsAppKey = (companyId) => ["whatsapps", companyId || "none"];
 
 const useWhatsApps = () => {
-  const [whatsApps, dispatch] = useReducer(reducer, []);
-  const [loading, setLoading] = useState(true);
-
   const socketManager = useContext(SocketContext);
+  const companyId = localStorage.getItem("companyId");
+
+  const { data, isLoading } = useQuery(
+    whatsAppKey(companyId),
+    async () => {
+      const { data: payload } = await api.get("/whatsapp/?session=0");
+      return payload;
+    },
+    {
+      enabled: Boolean(companyId),
+      staleTime: 60 * 1000,
+      retry: false,
+      onError: (err) => toastError(err),
+    }
+  );
 
   useEffect(() => {
-    setLoading(true);
-    const fetchSession = async () => {
-      try {
-        const { data } = await api.get("/whatsapp/?session=0");
-        dispatch({ type: "LOAD_WHATSAPPS", payload: data });
-        setLoading(false);
-      } catch (err) {
-        setLoading(false);
-        toastError(err);
-      }
-    };
-    fetchSession();
-  }, []);
-
-  useEffect(() => {
-    const companyId = localStorage.getItem("companyId");
+    if (!companyId) return undefined;
     const socket = socketManager.getSocket(companyId);
 
-    const handleWhatsApp = (data) => {
-      if (data.action === "update") {
-        dispatch({ type: "UPDATE_WHATSAPPS", payload: data.whatsapp });
+    const updateList = (updater) => {
+      queryClient.setQueryData(whatsAppKey(companyId), (current) => {
+        const list = Array.isArray(current) ? current : [];
+        return updater(list);
+      });
+    };
+
+    const handleWhatsApp = (payload) => {
+      if (payload.action === "update") {
+        updateList((list) => {
+          const index = list.findIndex((item) => item.id === payload.whatsapp.id);
+          if (index === -1) return [payload.whatsapp, ...list];
+          const next = list.slice();
+          next[index] = payload.whatsapp;
+          return next;
+        });
       }
-      if (data.action === "delete") {
-        dispatch({ type: "DELETE_WHATSAPPS", payload: data.whatsappId });
+      if (payload.action === "delete") {
+        updateList((list) => list.filter((item) => item.id !== payload.whatsappId));
       }
     };
 
-    const handleWhatsAppSession = (data) => {
-      if (data.action === "update") {
-        dispatch({ type: "UPDATE_SESSION", payload: data.session });
-      }
+    const handleWhatsAppSession = (payload) => {
+      if (payload.action !== "update") return;
+      updateList((list) =>
+        list.map((item) =>
+          item.id === payload.session.id
+            ? {
+                ...item,
+                status: payload.session.status,
+                updatedAt: payload.session.updatedAt,
+                qrcode: payload.session.qrcode,
+                retries: payload.session.retries,
+              }
+            : item
+        )
+      );
     };
 
     socket.on(`company-${companyId}-whatsapp`, handleWhatsApp);
@@ -100,9 +77,9 @@ const useWhatsApps = () => {
       socket.off(`company-${companyId}-whatsapp`, handleWhatsApp);
       socket.off(`company-${companyId}-whatsappSession`, handleWhatsAppSession);
     };
-  }, [socketManager]);
+  }, [socketManager, companyId]);
 
-  return { whatsApps, loading };
+  return { whatsApps: data || EMPTY_WHATSAPPS, loading: isLoading };
 };
 
 export default useWhatsApps;

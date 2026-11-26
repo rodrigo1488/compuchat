@@ -65,11 +65,28 @@ export function del(key: string) {
   return redis.del(key);
 }
 
-export async function delFromPattern(pattern: string) {
-  const all = await getKeys(pattern);
-  for (let item of all) {
-    del(item);
-  }
+export function delFromPattern(pattern: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stream = redis.scanStream({ match: pattern, count: 200 });
+    const keys: string[] = [];
+
+    stream.on("data", (batch: string[]) => {
+      if (batch?.length) keys.push(...batch);
+    });
+
+    stream.on("end", () => {
+      const unlinkInChunks = async () => {
+        for (let i = 0; i < keys.length; i += 200) {
+          const slice = keys.slice(i, i + 200);
+          if (slice.length) await redis.unlink(...slice);
+        }
+      };
+
+      unlinkInChunks().then(() => resolve()).catch(reject);
+    });
+
+    stream.on("error", reject);
+  });
 }
 
 export const cacheLayer = {

@@ -11,11 +11,20 @@ import {
   ForeignKey,
   BelongsTo,
   HasMany,
+  AfterBulkDestroy,
+  AfterBulkUpdate,
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate,
 } from "sequelize-typescript";
 import Company from "./Company";
 import ProductVariation from "./ProductVariation";
 import ProductComboItem from "./ProductComboItem";
 import AddOnGroup from "./AddOnGroup";
+import {
+  invalidateCatalogBulk,
+  invalidateCatalogInstance
+} from "../helpers/companyCacheHooks";
 
 @Table
 class Product extends Model<Product> {
@@ -98,6 +107,19 @@ class Product extends Model<Product> {
 
   @UpdatedAt
   updatedAt: Date;
+
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static invalidateCatalog(instance: Product): void {
+    invalidateCatalogInstance(instance);
+  }
+
+  @AfterBulkUpdate
+  @AfterBulkDestroy
+  static invalidateCatalogBulk(options: { where?: { companyId?: unknown } }): void {
+    invalidateCatalogBulk(options);
+  }
 }
 
 export default Product;
